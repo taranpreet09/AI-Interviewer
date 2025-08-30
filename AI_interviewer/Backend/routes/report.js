@@ -1,71 +1,108 @@
-// /routes/report.js
-// NEW FILE - Generates the final structured report for the dashboard.
-
 const express = require('express');
 const router = express.Router();
 const Session = require('../models/session');
+const Question = require('../models/Question');
+const { evaluateBehavioral, evaluateTheory, evaluateCoding, generateFinalSummary } = require('../utils/aiEvaluator');
 
-// --- Analysis Helper Functions ---
-
-function analyzeSession(session) {
-    const report = {
-        candidate: "Candidate", // Placeholder name
-        role: session.role,
-        round: session.interviewType,
-        scores: { behavioral: 0, theory: 0, coding: 0 },
-        feedback: { behavioral: "", theory: "", coding: "" },
-        summary: ""
-    };
-
-    const behavioralAnswers = session.messages.filter(m => m.analysis && m.analysis.isWeak !== undefined && !m.type.includes('coding'));
-    const codingAnswers = session.messages.filter(m => m.type.includes('coding')); // A simple heuristic
-
-    // Behavioral Analysis
-    if (behavioralAnswers.length > 0) {
-        const avgScore = behavioralAnswers.reduce((sum, msg) => sum + (msg.analysis.score || 2.5), 0) / behavioralAnswers.length;
-        report.scores.behavioral = parseFloat(avgScore.toFixed(1));
-        if (avgScore > 4) {
-            report.feedback.behavioral = "Excellent. Answers were well-structured, confident, and detailed.";
-        } else if (avgScore > 2.5) {
-            report.feedback.behavioral = "Good confidence and clear communication, but answers could be more structured. Remember to detail specific outcomes.";
-        } else {
-            report.feedback.behavioral = "Candidate should practice articulating their experiences using the STAR method to provide more depth.";
-        }
-    }
-
-    // Theory/Coding Analysis (Simplified for this example)
-    report.scores.theory = 4.0;
-    report.feedback.theory = "Solid understanding of core concepts. Missed some nuance on polymorphism.";
-    report.scores.coding = 5.0;
-    report.feedback.coding = "Correct and clean solution, but the O(n²) time complexity could be optimized.";
-
-    // Overall Summary
-    const overallScore = (report.scores.behavioral + report.scores.theory + report.scores.coding) / 3;
-    if (overallScore > 4.0) {
-        report.summary = "Strong candidate with excellent problem-solving skills and clear communication. A great fit for the role.";
-    } else {
-        report.summary = "Promising candidate with strong technical skills. Would benefit from more practice in structured behavioral storytelling to better showcase their impact.";
-    }
-
-    return report;
-}
-
-
-// --- API Route ---
 router.get('/analyze/session/:sessionId', async (req, res) => {
+
+    /*
+    // --- MOCK REPORT LOGIC (Temporarily Disabled) ---
+    console.log("[DEBUG] Returning a MOCKED report to save API quota.");
+    const mockReport = {
+        role: "Software Engineer",
+        company: "Mock Company",
+        summary: {
+            strengths: "Good problem-solving approach.",
+            weaknesses: "Needs to elaborate more on results.",
+            nextSteps: "Practice quantifying outcomes."
+        },
+        detailedFeedback: [
+            {
+                question: "This is a mock question about a project.",
+                answer: "This is my detailed mock answer where I describe the project.",
+                score: 4.5,
+                details: "A well-structured answer.",
+                tips: "Great job, try adding more numbers to the result."
+            },
+            {
+                question: "This is a second mock question about teamwork.",
+                answer: "This is another mock answer about how I collaborated with my team.",
+                score: 3.8,
+                details: "Good description of the action taken.",
+                tips: "Clearly define the initial situation next time."
+            }
+        ]
+    };
+    return res.json(mockReport);
+    */
+
+    // --- REAL AI REPORT LOGIC (Currently Active) ---
     try {
-        const session = await Session.findById(req.params.sessionId);
+        const session = await Session.findById(req.params.sessionId).populate('history.question');
         if (!session || session.status !== 'completed') {
             return res.status(404).json({ message: "Completed session not found." });
         }
         
-        // Generate the structured report
-        const reportData = analyzeSession(session);
+        session.report = undefined; 
 
-        res.json(reportData);
+        const detailedFeedback = [];
+        const categoryScores = { behavioral: [], theory: [], coding: [] };
 
+        for (const item of session.history) {
+            if (!item.userAnswer || !item.question) continue;
+
+            console.log(`[DEBUG] Analyzing question: "${item.question.text}"`);
+
+            let feedbackItem = null;
+            const { category, text } = item.question;
+
+            if (category === 'behavioral') {
+                feedbackItem = await evaluateBehavioral(text, item.userAnswer);
+            } else if (category === 'theory') {
+                feedbackItem = await evaluateTheory(text, item.question.idealAnswer, item.userAnswer);
+            } else if (category === 'coding') {
+                const aiCritique = await evaluateCoding(text, item.userAnswer);
+                if (aiCritique) {
+                    feedbackItem = aiCritique;
+                }
+            }
+            
+            if (feedbackItem) {
+                if (feedbackItem.score) categoryScores[category].push(feedbackItem.score);
+                detailedFeedback.push({
+                    question: text,
+                    category: category,
+                    answer: item.userAnswer,
+                    ...feedbackItem
+                });
+            }
+        }
+
+        const summary = await generateFinalSummary(detailedFeedback);
+
+        const finalScores = {
+            behavioral: categoryScores.behavioral.length ? categoryScores.behavioral.reduce((a, b) => a + b, 0) / categoryScores.behavioral.length : 0,
+            theory: categoryScores.theory.length ? categoryScores.theory.reduce((a, b) => a + b, 0) / categoryScores.theory.length : 0,
+            coding: categoryScores.coding.length ? categoryScores.coding.reduce((a, b) => a + b, 0) / categoryScores.coding.length : 0,
+        };
+
+        const finalReport = {
+            candidate: "Candidate",
+            role: session.role,
+            company: session.company,
+            round: session.interviewType,
+            finalScores: finalScores,
+            summary: summary || { strengths: "N/A", weaknesses: "N/A", nextSteps: "N/A" },
+            detailedFeedback: detailedFeedback
+        };
+
+        session.report = finalReport;
+        await session.save();
+        console.log("[DEBUG] Report generation complete. All questions analyzed.");
+        res.json(finalReport);
     } catch (error) {
-        console.error("Error generating report:", error);
+        console.error("Error in /analyze/session:", error);
         res.status(500).json({ message: "Error generating report", error: error.message });
     }
 });

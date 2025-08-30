@@ -1,9 +1,7 @@
-// src/components/CodeEditor.jsx
 import React from 'react';
 import Editor from '@monaco-editor/react';
 
 const CodeEditor = ({ code, setCode, language }) => {
-    // Mapping our simple language name to Monaco's identifiers
     const languageMap = {
         93: 'javascript',
         71: 'python',

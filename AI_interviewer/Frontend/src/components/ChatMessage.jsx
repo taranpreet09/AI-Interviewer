@@ -1,6 +1,3 @@
-// /src/components/ChatMessage.jsx
-// REPLACED FILE
-
 import React from 'react';
 
 const AiAvatar = () => (

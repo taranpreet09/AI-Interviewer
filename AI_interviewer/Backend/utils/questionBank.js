@@ -1,6 +1,3 @@
-// /utils/questionBank.js
-// NEW FILE - A structured bank of questions by type and difficulty
-
 const questionBank = {
   behavioral: {
     easy: [
@@ -27,16 +24,19 @@ const questionBank = {
       { text: "Given a sorted array of integers, write a function that finds the first and last position of a given target value (Binary Search).", language_id: 93 },
     ],
   },
-  theory: {
-    easy: [
-      { text: "What is an API?" },
-    ],
+theory: {
     medium: [
-      { text: "Explain the difference between SQL and NoSQL databases." },
+      { 
+        text: "Explain the difference between SQL and NoSQL databases.",
+        idealAnswer: "SQL databases are relational, use structured query language, and have a predefined schema. They are vertically scalable and good for applications requiring multi-row transactions. NoSQL databases are non-relational, have dynamic schemas, are horizontally scalable, and are great for unstructured data, large volumes, and flexible data models. Examples include key-value, document, and graph databases."
+      },
     ],
     hard: [
-      { text: "What is polymorphism in object-oriented programming? Provide an example." },
-    ],
+      {
+        text: "What is polymorphism in object-oriented programming? Provide an example.",
+        idealAnswer: "Polymorphism, meaning 'many forms', is a core OOP concept where a single interface can represent different underlying forms (data types). It allows methods to do different things based on the object it is acting upon. A common example is a base class 'Shape' with a method 'draw()'. Subclasses like 'Circle' and 'Square' can implement 'draw()' in their own unique way. You can then call the 'draw()' method on an array of 'Shape' objects, and the correct implementation will be executed for each, enabling code flexibility and extension."
+      }
+    ]
   }
 };
 

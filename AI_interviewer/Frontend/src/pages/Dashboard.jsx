@@ -1,6 +1,3 @@
-// /src/pages/Dashboard.jsx
-// NEW FILE
-
 import React, { useState, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import axios from 'axios';
@@ -36,7 +33,6 @@ const Dashboard = () => {
         <div className="container mx-auto p-6">
             <h1 className="text-4xl font-bold text-center mb-8 text-cyan-400">Analytics Dashboard</h1>
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                {/* Confidence Trend */}
                 <div className="bg-gray-800 p-6 rounded-lg">
                     <h2 className="text-xl font-semibold mb-4 text-white">Confidence Trend (Behavioral)</h2>
                     <ResponsiveContainer width="100%" height={300}>
@@ -51,7 +47,6 @@ const Dashboard = () => {
                     </ResponsiveContainer>
                 </div>
 
-                {/* Time per Question */}
                 <div className="bg-gray-800 p-6 rounded-lg">
                     <h2 className="text-xl font-semibold mb-4 text-white">Time per Question (seconds)</h2>
                      <ResponsiveContainer width="100%" height={300}>
@@ -65,7 +60,6 @@ const Dashboard = () => {
                     </ResponsiveContainer>
                 </div>
 
-                {/* Coding Accuracy */}
                 {data.accuracyData[0].value > 0 || data.accuracyData[1].value > 0 ? (
                     <div className="bg-gray-800 p-6 rounded-lg lg:col-span-2 flex flex-col items-center">
                         <h2 className="text-xl font-semibold mb-4 text-white">Coding Accuracy</h2>

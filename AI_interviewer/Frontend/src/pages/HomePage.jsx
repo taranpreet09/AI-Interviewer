@@ -1,6 +1,3 @@
-// /src/pages/HomePage.jsx
-// NEW FILE
-
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
@@ -26,15 +23,14 @@ const HomePage = () => {
         setLoading(true);
         setError('');
         try {
-            // Unify 'Technical' and 'DSA' for the backend plan
             const submissionData = { ...formData };
             if (submissionData.interviewType === 'Technical') {
                 submissionData.interviewType = 'DSA';
             }
 
             const response = await axios.post(`${API_URL}/start`, submissionData);
-            const { sessionId, firstQuestion } = response.data;
-            navigate(`/interview/${sessionId}`, { state: { initialQuestion: firstQuestion } });
+            const { sessionId, greeting } = response.data;
+           navigate(`/interview/${sessionId}`, { state: { greeting: greeting } });
         } catch (err) {
             setError('Failed to start interview. Please check the backend server.');
             console.error(err);

@@ -1,6 +1,3 @@
-// /src/components/ScoreCard.jsx
-// NEW FILE
-
 import React from 'react';
 
 const ScoreCard = ({ title, scores, feedback, question }) => {

@@ -1,5 +1,3 @@
-// /routes/dashboard.js
-// NEW FILE - Provides analytics data for a given session
 
 const express = require('express');
 const router = express.Router();
@@ -18,7 +16,6 @@ router.get('/:sessionId', async (req, res) => {
         let incorrectCount = 0;
 
         session.history.forEach((item, index) => {
-            // Confidence Trend (for behavioral questions)
             if (item.question.type === 'behavioral' && item.analysis) {
                 confidenceData.push({
                     question: `Q${index + 1}`,
@@ -26,18 +23,16 @@ router.get('/:sessionId', async (req, res) => {
                 });
             }
 
-            // Time per Question
             if (item.timestampStart && item.timestampEnd) {
-                const timeTaken = (new Date(item.timestampEnd) - new Date(item.timestampStart)) / 1000; // in seconds
+                const timeTaken = (new Date(item.timestampEnd) - new Date(item.timestampStart)) / 1000; 
                 timeData.push({
                     question: `Q${index + 1} (${item.question.type})`,
                     time: timeTaken,
                 });
             }
             
-            // Coding Accuracy
             if (item.question.type === 'coding' && item.analysis) {
-                if (item.analysis.score > 3) { // Assuming score > 3 means correct
+                if (item.analysis.score > 3) { 
                     correctCount++;
                 } else {
                     incorrectCount++;

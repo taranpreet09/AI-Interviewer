@@ -1,11 +1,8 @@
-// /routes/feedback.js
-// This is the corrected and complete file.
 
 const express = require('express');
 const router = express.Router();
 const Session = require('../models/session');
 
-// --- Analysis Functions (These are correct) ---
 const analyzeSTAR = (text) => {
     const s = /(situation|context|my role was|project i worked on)/i.test(text) ? 1 : 0;
     const t = /(task|objective|goal|i needed to)/i.test(text) ? 1 : 0;
@@ -46,16 +43,14 @@ const analyzeBehavioral = (historyItem) => {
 };
 
 const analyzeTheory = (historyItem) => {
-    // This function can be expanded with more keyword checks
     return {
         questionText: historyItem.question.text,
-        score: historyItem.analysis.score, // Use score from orchestration
+        score: historyItem.analysis.score, 
         feedback: "The explanation was clear. Adding a concrete example would make it even stronger."
     };
 };
 
 const analyzeCoding = (historyItem) => {
-    // This function can be expanded as well
      return {
         questionText: historyItem.question.text,
         correctness: historyItem.analysis.score > 3 ? "Accepted" : "Partial",
@@ -66,8 +61,6 @@ const analyzeCoding = (historyItem) => {
     };
 };
 
-
-// --- Main Analysis Route ---
 router.post('/analyze/:sessionId', async (req, res) => {
     try {
         const { sessionId } = req.params;
@@ -86,9 +79,7 @@ router.post('/analyze/:sessionId', async (req, res) => {
         let theoryScores = [];
         let codingScores = [];
 
-        // --- THIS IS THE CORRECTED LOOP ---
         for (const historyItem of session.history) {
-            // Check if there is an answer to analyze
             if (!historyItem.userAnswer) continue;
 
             if (historyItem.question.category === 'behavioral') {
@@ -102,11 +93,10 @@ router.post('/analyze/:sessionId', async (req, res) => {
             } else if (historyItem.question.category === 'coding') {
                 const analysis = analyzeCoding(historyItem);
                 report.codingAnalysis.push(analysis);
-                codingScores.push(historyItem.analysis.score); // Use score from orchestration
+                codingScores.push(historyItem.analysis.score); 
             }
         }
         
-        // Calculate final scores and feedback summaries
         if (behavioralScores.length > 0) {
             const avg = behavioralScores.reduce((a, b) => a + b, 0) / behavioralScores.length;
             report.finalScores.behavioral = { score: avg.toFixed(1), feedback: avg > 3.5 ? "Good confidence and structure." : "Work on structured storytelling." };
