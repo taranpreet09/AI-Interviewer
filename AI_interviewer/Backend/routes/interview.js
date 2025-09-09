@@ -5,203 +5,266 @@ const Session = require('../models/session');
 const Question = require('../models/Question');
 const { generateAiQuestion } = require('../utils/aiQuestionGen');
 const { analyzeAnswerHeuristic, buildInterviewerPrompt, callGemini } = require('../utils/aiOrchestrator');
+const { evaluateBehavioral, evaluateTheory, evaluateCoding } = require('../utils/aiEvaluator');
 const router = express.Router();
-
-function analyzeAnswer(question, answer) {
-    if (!question || !question.category) { return { score: 2.5 }; }
-    let score = 2.5;
-    if (answer.length < 20) score -= 1.5; else if (answer.length > 100) score += 1;
-    if (question.category === 'behavioral' && /(result|outcome|achieved)/i.test(answer)) score += 1.5;
-    if (question.category === 'theory' && answer.length > 50) score = 4;
-    if (question.category === 'coding' && answer.includes('return')) score = 5;
-    return { score: Math.max(0, Math.min(5, score)) };
-}
-async function decideNextStep(session) {
-    console.log('[DEBUG] Entering decideNextStep...');
-    const history = session.history || [];
-
-    let idx = history.length - 1;
-    while (idx >= 0 && (!history[idx].question || history[idx].isFollowUp)) {
-        idx--;
-    }
-
-    if (idx < 0) {
-        idx = history.length - 1;
-    }
-
-    const lastItem = history[idx];
-    if (!lastItem) {
-        console.warn('[DEBUG] No history items available. Ending interview.');
-        return { action: 'END_INTERVIEW' };
-    }
-
-    let questionObj = lastItem.question;
-    if (questionObj && (typeof questionObj === 'string' || questionObj._id === undefined)) {
-        try {
-            questionObj = await Question.findById(questionObj);
-            lastItem.question = questionObj;
-        } catch (err) {
-            console.warn('[DEBUG] Failed to load question document for decision-making:', err);
-            return { action: 'END_INTERVIEW' };
-        }
-    }
-
-    if (!questionObj || !questionObj.category) {
-        console.warn('[DEBUG] Last question object missing category. Ending interview.');
-        return { action: 'END_INTERVIEW' };
-    }
-
-    if (history.length >= 7) return { action: 'END_INTERVIEW' };
-
-    const lastScore = (lastItem.analysis && typeof lastItem.analysis.score === 'number') ? lastItem.analysis.score : 2.5;
-    let nextDifficulty = session.currentDifficulty || 'medium';
-    if (lastScore >= 4.0) {
-        nextDifficulty = (nextDifficulty === 'easy') ? 'medium' : 'hard';
-    } else if (lastScore < 2.5) {
-        nextDifficulty = (nextDifficulty === 'hard') ? 'medium' : 'easy';
-    }
-
-    if (lastScore < 2.5 && questionObj.category === 'behavioral' && !lastItem.isFollowUp) {
-        console.log('[DEBUG] Decided to ASK_FOLLOW_UP.');
-        return { action: 'ASK_FOLLOW_UP', followUp: "Can you elaborate on that?" };
-    }
-
-    const lastCategory = questionObj.category;
-    const nextCategory = (lastCategory === 'behavioral') ? 'theory' : (lastCategory === 'theory' ? 'coding' : 'behavioral');
-
-    const askedQuestionIds = history
-        .map(h => (h.question && h.question._id) ? h.question._id.toString() : (h.question ? h.question.toString() : null))
-        .filter(Boolean);
-
-    const aiContext = {
-        role: session.role, company: session.company, interviewType: session.interviewType,
-        difficulty: nextDifficulty, type: nextCategory, history
-    };
-
-    let nextQuestion = null;
-    let aiGeneratedData = null;
-    try {
-        aiGeneratedData = await generateAiQuestion(aiContext);
-    } catch (err) {
-        console.warn('[DEBUG] AI generation failed:', err);
-    }
-
-    if (aiGeneratedData) {
-        try {
-            let existingQuestion = await Question.findOne({ text: aiGeneratedData.text });
-            if (existingQuestion) {
-                console.log('[DEBUG] AI generated a duplicate question. Using existing document from DB.');
-                nextQuestion = existingQuestion;
-            } else {
-                const newQ = new Question({ ...aiGeneratedData, source: 'ai', tags: [session.role, session.company].filter(Boolean) });
-                await newQ.save();
-                nextQuestion = newQ;
-                console.log('[DEBUG] AI generated a new question and saved it to DB.');
-            }
-        } catch (err) {
-            console.warn('[DEBUG] Error saving AI question:', err);
-        }
-    }
-
-    if (!nextQuestion) {
-        console.warn("[DEBUG] AI failed or couldn't save. Using DB fallback.");
-        nextQuestion = await Question.findOne({ category: nextCategory, difficulty: nextDifficulty, _id: { $nin: askedQuestionIds } });
-        if (!nextQuestion) {
-            console.warn('[DEBUG] Primary fallback failed. Using ultimate fallback.');
-            nextQuestion = await Question.findOne({ _id: { $nin: askedQuestionIds } });
-        }
-    }
-
-    if (!nextQuestion) {
-        console.error("[DEBUG] No next question could be found. Ending interview.");
-        return { action: 'END_INTERVIEW' };
-    }
-
-    console.log(`[DEBUG] Decided to ASK_NEW_QUESTION. Text: "${String(nextQuestion.text).substring(0, 40)}..."`);
-    return { action: 'ASK_NEW_QUESTION', question: nextQuestion, nextDifficulty };
-}
-
 
 router.post('/start', async (req, res) => {
     try {
-        const { role, company, interviewType } = req.body;
-        const newSession = new Session({
-            role,
-            company,
-            interviewType,
-            history: [] 
+        const { role, company, interviewType, interviewMode } = req.body;
+        
+        // Add input validation
+        if (!interviewMode || !interviewType) {
+            return res.status(400).json({ message: "interviewMode and interviewType are required." });
+        }
+        if (!role || role.trim() === '') {
+            return res.status(400).json({ message: "Role is a required field." });
+        }
+        
+        // Validate interviewMode values
+        if (!['full', 'specific'].includes(interviewMode)) {
+            return res.status(400).json({ message: "interviewMode must be 'full' or 'specific'." });
+        }
+        
+        const newSession = new Session({ 
+            role: role, // --- REMOVED THE FALLBACK ---
+            company: company || 'Tech Company', // This fallback is fine as company is less critical
+            interviewType, 
+            interviewMode, 
+            history: [],
+            messages: []
         });
+        
         await newSession.save();
-        res.json({ 
+        
+        res.json({
             sessionId: newSession._id,
-            greeting: "Hello! I'm your AI interviewer. Thanks for joining. Let's begin with your first question." 
+            greeting: `Hello! I'm Alex, your AI interviewer. Thanks for joining us today for this ${interviewType} interview. Let's begin!`
         });
     } catch (err) {
         console.error("Error starting session:", err);
-        res.status(500).json({ message: "Error starting session" });
+        res.status(500).json({ message: "Error starting session", error: err.message });
     }
 });
+
+// routes/interview.js
 
 router.post('/next-step', async (req, res) => {
     try {
         const { sessionId, answer } = req.body;
-        const session = await Session.findById(sessionId);
-        if (!session) return res.status(404).json({ message: "Session not found" });
+        
+        if (!sessionId) {
+            return res.status(400).json({ message: "sessionId is required" });
+        }
+        
+        const session = await Session.findById(sessionId).populate('history.question');
 
-        if (session.history.length > 0) {
-            const lastItem = session.history[session.history.length - 1];
-            lastItem.userAnswer = answer;
-            lastItem.timestampEnd = new Date();
+        if (!session || session.status === 'completed') {
+            return res.status(404).json({ message: "Session not found or already completed." });
         }
 
-        session.messages.push({ role: 'user', text: answer, type: 'answer' });
-        const lastQuestion = await Question.findById(session.history[session.history.length - 1]?.question);
-        const answerQuality = analyzeAnswerHeuristic(answer, lastQuestion);
-        const prompt = buildInterviewerPrompt(session, answerQuality);
+        // Initialize promptContext early to prevent reference errors.
+        let promptContext = {
+            role: session.role,
+            interviewType: session.interviewType,
+            interviewMode: session.interviewMode,
+            currentStage: session.currentStage,
+            transitionText: null, // This will be updated by adaptive/stage logic
+            lastAnswerAnalysis: null // This will be updated after scoring
+        };
 
-        const aiResponse = await callGemini(prompt);
-        session.messages.push({ role: 'ai', text: aiResponse.dialogue, type: 'question' });
+        // Process the user's answer if there's a pending question
+        if (session.history.length > 0 && answer !== undefined) {
+            const lastItem = session.history[session.history.length - 1];
+            if (lastItem && !lastItem.userAnswer) {
+                lastItem.userAnswer = answer || "";
+                lastItem.timestampEnd = new Date();
+                
+                const answerAnalysis = analyzeAnswerHeuristic(answer, lastItem.question);
+                
+                // Get AI evaluation score
+                let score = 2.5; // Default score
+                try {
+                    if (lastItem.question.category === 'behavioral') {
+                        const evalResult = await evaluateBehavioral(lastItem.question.text, answer);
+                        score = evalResult?.score || 2.5;
+                    } else if (lastItem.question.category === 'theory') {
+                        const evalResult = await evaluateTheory(lastItem.question.text, lastItem.question.idealAnswer, answer);
+                        score = evalResult?.score || 2.5;
+                    } else if (lastItem.question.category === 'coding') {
+                        const evalResult = await evaluateCoding(lastItem.question.text, answer);
+                        score = evalResult?.score || 2.5;
+                    }
+                } catch (evalError) {
+                    console.error("Evaluation error:", evalError);
+                }
+                
+                lastItem.analysis = { 
+                    score, 
+                    isWeak: answerAnalysis.isWeak,
+                    isRude: answerAnalysis.isRude 
+                };
 
-        if (aiResponse.action === 'CONTINUE') {
-            const newQuestion = new Question({
-                text: aiResponse.dialogue,
-                category: aiResponse.category,
-                difficulty: aiResponse.difficulty,
-                source: 'ai',
-                tags: [session.role].filter(Boolean)
-            });
-            await newQuestion.save();
+                // Update promptContext with the latest analysis
+                promptContext.lastAnswerAnalysis = lastItem.analysis;
+                
+                // Adaptive Difficulty Logic
+                if (session.interviewMode === 'full') {
+                    const scoredHistory = session.history.filter(h => h.analysis && typeof h.analysis.score === 'number');
+                    if (scoredHistory.length > 0) {
+                        const totalScore = scoredHistory.reduce((sum, h) => sum + h.analysis.score, 0);
+                        const averageScore = totalScore / scoredHistory.length;
+
+                        if (averageScore >= 4.0 && session.currentDifficulty !== 'hard') {
+                            session.currentDifficulty = 'hard';
+                            promptContext.transitionText = "That's a very strong answer. Let's try something more challenging.";
+                        } else if (averageScore < 2.5 && session.currentDifficulty !== 'easy') {
+                            session.currentDifficulty = 'easy';
+                            promptContext.transitionText = "Okay, let's switch gears a bit. I have another question for you.";
+                        } else if (averageScore >= 2.5 && averageScore < 4.0 && session.currentDifficulty !== 'medium') {
+                            session.currentDifficulty = 'medium';
+                        }
+                    }
+                }
+            }
+        }
+
+        // Handle stage transitions for full interviews
+        if (session.interviewMode === 'full') {
+            const questionsInCurrentStage = session.history.filter(h => h.stage === session.currentStage).length;
             
-            session.history.push({
-                question: newQuestion._id,
-                timestampStart: new Date()
+            if (session.currentStage === 1 && questionsInCurrentStage >= 3) {
+                session.currentStage = 2;
+                promptContext.currentStage = 2;
+                promptContext.transitionText = promptContext.transitionText || "Great! That gives me a good overview. Let's dive deeper into some technical areas now.";
+            } else if (session.currentStage === 2 && questionsInCurrentStage >= 4) {
+                session.currentStage = 3;
+                promptContext.currentStage = 3;
+                promptContext.transitionText = promptContext.transitionText || "Excellent technical discussion! For our final segment, I'd like to understand more about your leadership and collaboration experience.";
+            } else if (session.currentStage === 3 && questionsInCurrentStage >= 2) {
+                session.status = 'completed';
+            }
+        }
+
+        // Add user message to conversation history
+        if (answer !== undefined) {
+            session.messages.push({ role: 'user', content: answer });
+        }
+        
+        // Build conversation context
+        promptContext.recentHistory = session.messages
+            .slice(-10) 
+            .map(msg => `${msg.role}: ${msg.content}`)
+            .join('\n');
+        
+        const prompt = buildInterviewerPrompt(session, promptContext);
+        const aiResponse = await callGemini(prompt, session);
+
+        if (aiResponse.action === 'CONTINUE' && session.status !== 'completed') {
+            const questionDoc = await Question.findOneAndUpdate(
+                { text: aiResponse.dialogue },
+                { 
+                    $setOnInsert: { 
+                        text: aiResponse.dialogue, 
+                        category: aiResponse.category, 
+                        difficulty: session.currentDifficulty || aiResponse.difficulty || 'medium', 
+                        source: 'ai' 
+                    }
+                },
+                { upsert: true, new: true }
+            );
+            
+            session.history.push({ 
+                question: questionDoc._id, 
+                timestampStart: new Date(),
+                stage: session.currentStage
             });
-        } else if (aiResponse.action === 'END_INTERVIEW') {
+            
+            session.messages.push({ role: 'assistant', content: aiResponse.dialogue });
+        } else {
             session.status = 'completed';
+            session.endReason = 'natural_conclusion';
         }
 
         await session.save();
-        res.json(aiResponse);
+        
+        const responsePayload = { 
+            ...aiResponse, 
+            currentStage: session.currentStage,
+            sessionStatus: session.status
+        };
+        
+        res.json(responsePayload);
+
     } catch (err) {
-        console.error("!!! CRITICAL ERROR IN /next-step !!!:", err);
-        if (err.code === 11000) {
-            const failsafeResponse = { action: "END_INTERVIEW", dialogue: "I seem to have repeated a question. Let's end the session here. Thank you for your time." };
-            return res.json(failsafeResponse);
+        console.error("Critical error in /next-step:", err);
+        res.status(500).json({ 
+            message: "Error in interview orchestration", 
+            error: err.message,
+            action: "END_INTERVIEW",
+            dialogue: "I apologize, but we're experiencing technical difficulties. Let's conclude our interview here."
+        });
+    }
+});
+
+router.post('/end/:sessionId', async (req, res) => {
+    try {
+        const { sessionId } = req.params;
+        const { finalAnswer } = req.body;
+        
+        const session = await Session.findById(sessionId);
+        if (!session) {
+            return res.status(404).json({ message: "Session not found" });
         }
-        res.status(500).json({ message: "Error in orchestration", error: err.message });
+
+        // Handle final answer if provided
+        if (typeof finalAnswer === 'string' && session.history.length > 0) {
+            const lastItem = session.history[session.history.length - 1];
+            if (lastItem && !lastItem.userAnswer) {
+                lastItem.userAnswer = finalAnswer;
+                lastItem.timestampEnd = new Date();
+                
+                // Quick analysis for final answer
+                lastItem.analysis = { score: 2.5, isWeak: finalAnswer.length < 20 };
+            }
+        }
+
+        session.status = 'completed';
+        session.endReason = session.endReason || 'user_ended';
+        session.lastActivity = new Date();
+        
+        await session.save();
+
+        res.status(200).json({ 
+            message: "Interview ended successfully. Generating your report...",
+            sessionId: session._id
+        });
+        
+    } catch (error) {
+        console.error("Error ending session:", error);
+        res.status(500).json({ message: "Failed to end session", error: error.message });
     }
 });
 
 router.get('/session/:sessionId', async (req, res) => {
     try {
         const session = await Session.findById(req.params.sessionId).populate('history.question');
-        if (!session) return res.status(404).json({ message: "Session not found" });
+        if (!session) {
+            return res.status(404).json({ message: "Session not found" });
+        }
         res.json(session);
-    } catch (err) { res.status(500).json({ message: "Error fetching session", error: err.message }); }
+    } catch (err) {
+        console.error("Error fetching session:", err);
+        res.status(500).json({ message: "Error fetching session", error: err.message });
+    }
 });
 
 router.post('/code/submit', async (req, res) => {
     const { source_code, language_id } = req.body;
+    
+    if (!source_code) {
+        return res.status(400).json({ message: 'Source code is required' });
+    }
+    
     const options = {
         method: 'POST',
         url: `https://${process.env.JUDGE0_API_HOST}/submissions`,
@@ -211,13 +274,19 @@ router.post('/code/submit', async (req, res) => {
             'X-RapidAPI-Host': process.env.JUDGE0_API_HOST,
             'X-RapidAPI-Key': process.env.JUDGE0_API_KEY,
         },
-        data: { language_id, source_code }
+        data: { language_id: language_id || 93, source_code },
+        timeout: 10000 // 10 second timeout
     };
+    
     try {
         const response = await axios.request(options);
         res.json(response.data);
     } catch (err) {
-        res.status(500).json({ message: 'Error executing code' });
+        console.error("Code execution error:", err);
+        res.status(500).json({ 
+            message: 'Error executing code',
+            error: err.response?.data || err.message 
+        });
     }
 });
 

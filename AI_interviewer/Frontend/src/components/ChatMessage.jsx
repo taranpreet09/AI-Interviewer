@@ -14,16 +14,16 @@ const UserAvatar = () => (
 
 const TypingIndicator = () => (
     <div className="flex items-center space-x-1">
-        <div className="w-2 h-2 bg-cyan-400 rounded-full animate-typing-dot-1"></div>
-        <div className="w-2 h-2 bg-cyan-400 rounded-full animate-typing-dot-2"></div>
-        <div className="w-2 h-2 bg-cyan-400 rounded-full animate-typing-dot-3"></div>
+        <div className="w-2 h-2 bg-cyan-400 rounded-full animate-bounce"></div>
+        <div className="w-2 h-2 bg-cyan-400 rounded-full animate-bounce" style={{animationDelay: '0.1s'}}></div>
+        <div className="w-2 h-2 bg-cyan-400 rounded-full animate-bounce" style={{animationDelay: '0.2s'}}></div>
     </div>
 );
 
 const ChatMessage = ({ message }) => {
     const isAi = message.role === 'ai';
 
-    if (message.isTyping) {
+     if (message.isTyping) {
         return (
              <div className="flex items-end space-x-3 max-w-lg animate-fade-in-slide-up">
                 <AiAvatar />
