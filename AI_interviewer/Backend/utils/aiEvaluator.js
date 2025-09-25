@@ -4,7 +4,7 @@ const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const delay = ms => new Promise(res => setTimeout(res, ms));
 
 // Enhanced API call function with better error handling and timeouts
-async function callAiForJson(prompt, maxRetries = 3, timeoutMs = 15000) {
+async function callAiForJson(prompt, maxRetries = 3, timeoutMs = 15000, maxOutputTokens = 300) {
     let retries = maxRetries;
     
     while (retries > 0) {
@@ -14,7 +14,7 @@ async function callAiForJson(prompt, maxRetries = 3, timeoutMs = 15000) {
                 generationConfig: {
                     responseMimeType: "application/json",
                     temperature: 0.1, // Lower temperature for more consistent responses
-                    maxOutputTokens: 300, // Reasonable limit for evaluation responses
+                    maxOutputTokens, // Reasonable limit for evaluation responses
                 }
             });
 
@@ -201,7 +201,7 @@ Identify patterns and provide actionable insights.
 Respond with JSON only:
 {"strengths": "key strengths observed", "weaknesses": "main areas for improvement", "nextSteps": "specific action items"}`;
 
-    const result = await callAiForJson(prompt, 2, 20000); // Allow more time for summary
+    const result = await callAiForJson(prompt, 2, 20000,1000); // Allow more time for summary
     
     if (!result) {
         console.warn("Summary generation failed, using fallback");

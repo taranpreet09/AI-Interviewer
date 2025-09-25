@@ -2,51 +2,131 @@ const { GoogleGenerativeAI } = require("@google/generative-ai");
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 function analyzeAnswerHeuristic(answer, question) {
-    if (!answer || !question) return { isWeak: true, reasons: ["No answer provided."] };
+    if (!answer || !question) {
+        return { 
+            isWeak: true, 
+            reasons: ["No answer provided."], 
+            isRude: false,
+            emotions: [],
+            sentiment: "neutral"
+        };
+    }
 
     const wordCount = answer.trim().split(/\s+/).length;
     let reasons = [];
     let isWeak = false;
 
-    // Check for rude or inappropriate behavior
-    const rudePatterns = [
-        /fuck|shit|damn|stupid|idiot|moron/i,
-        /this is dumb|waste of time|boring/i,
-        /you suck|terrible|awful/i
-    ];
+    // --- Enhanced sentiment analysis ---
+    const sentiment = analyzeSentiment(answer);
     
+    // --- Detect rudeness ---
+    const rudePatterns = [
+        /\bf+u+c+k+\b/i,
+        /\bshit+\b/i,
+        /\bdamn+\b/i,
+        /\bidiot(ic)?\b/i,
+        /\bmoron\b/i,
+        /\bbullshit\b/i
+    ];
     const isRude = rudePatterns.some(pattern => pattern.test(answer));
     if (isRude) {
-        return { isWeak: true, isRude: true, reasons: ["Inappropriate or unprofessional language detected."] };
+        return { 
+            isWeak: true, 
+            isRude: true, 
+            reasons: ["Inappropriate or unprofessional language detected."],
+            emotions: ["frustrated","angry"],
+            sentiment: "negative"
+        };
     }
 
+    // --- Enhanced emotional tone detection ---
+    const emotions = detectEmotions(answer);
+
+    // --- Behavioral question check (STAR method) ---
     if (question.category === 'behavioral') {
         let starCount = 0;
-        if (/(situation|context|project)/i.test(answer)) starCount++;
-        if (/(task|goal|objective)/i.test(answer)) starCount++;
-        if (/(action|i did|we did|i implemented)/i.test(answer)) starCount++;
-        if (/(result|outcome|impact|achieved)/i.test(answer)) starCount++;
+        if (/(situation|context|project|challenge|scenario|when)/i.test(answer)) starCount++;
+        if (/(task|goal|objective|responsibility|role|needed to)/i.test(answer)) starCount++;
+        if (/(action|i did|we did|i implemented|steps?|approach|decided)/i.test(answer)) starCount++;
+        if (/(result|outcome|impact|achieved|success|learned|improved)/i.test(answer)) starCount++;
 
         if (wordCount < 30) {
             isWeak = true;
-            reasons.push("Answer is very short.");
+            reasons.push("Answer could use more detail to showcase your experience.");
         }
-        if (starCount < 3) {
+        if (starCount < 2) {
             isWeak = true;
-            reasons.push("Answer may be missing key elements of the STAR method.");
+            reasons.push("Answer would benefit from more structure (situation, action, result).");
         }
     } else if (question.category === 'theory') {
         if (wordCount < 15) {
             isWeak = true;
-            reasons.push("Answer is very brief for a theory question.");
+            reasons.push("Answer seems brief for a technical concept.");
+        }
+    } else if (question.category === 'coding') {
+        if (wordCount < 20 && !answer.includes('function') && !answer.includes('def')) {
+            isWeak = true;
+            reasons.push("Could you provide a code solution or more detailed approach?");
         }
     }
 
-    return { isWeak, reasons, isRude: false };
+    return { 
+        isWeak, 
+        reasons, 
+        isRude: false, 
+        emotions,
+        sentiment
+    };
 }
-// In utils/aiOrchestrator.js
+
+function analyzeSentiment(text) {
+    const positiveWords = /\b(excited|happy|proud|confident|enjoyed|love|great|excellent|amazing|wonderful|successful|achieved)\b/i;
+    const negativeWords = /\b(difficult|hard|challenging|frustrated|confused|worried|nervous|struggled|failed|disappointed)\b/i;
+    const uncertainWords = /\b(maybe|perhaps|think|probably|might|unsure|not sure|guess)\b/i;
+    
+    if (positiveWords.test(text)) return "positive";
+    if (negativeWords.test(text)) return "negative";
+    if (uncertainWords.test(text)) return "uncertain";
+    return "neutral";
+}
+
+function detectEmotions(answer) {
+    const emotions = [];
+    
+    // Nervous indicators
+    if (/\b(nervous|anxious|worried|unsure|uncertain)\b/i.test(answer) || /umm+|uhh+|well\.\.\.|hmm/i.test(answer)) {
+        emotions.push("nervous");
+    }
+    
+    // Confidence indicators  
+    if (/\b(confident|sure|definitely|absolutely|certain|know for sure)\b/i.test(answer)) {
+        emotions.push("confident");
+    }
+    
+    // Excitement indicators
+    if (/\b(excited|thrilled|love|passion|amazing|awesome)\b/i.test(answer)) {
+        emotions.push("excited");
+    }
+    
+    // Frustration indicators
+    if (/\b(frustrated|annoyed|confused|this is hard|don't get it|stuck)\b/i.test(answer)) {
+        emotions.push("frustrated");
+    }
+    
+    // Thoughtful indicators
+    if (/\b(interesting|think about|consider|reflect|analyze|approach)\b/i.test(answer)) {
+        emotions.push("thoughtful");
+    }
+    
+    // Apologetic indicators
+    if (/\b(sorry|apologize|my bad|excuse me)\b/i.test(answer)) {
+        emotions.push("apologetic");
+    }
+    
+    return emotions;
+}
+
 function detectAnswerType(answer) {
-    // Detect various response types
     if (!answer || answer.trim() === "" || answer.toLowerCase().trim() === "no answer") {
         return "empty";
     }
@@ -68,131 +148,221 @@ function detectAnswerType(answer) {
     
     return "normal";
 }
+
+function buildPersonalizedContext(session, lastAnswerAnalysis) {
+    const context = {
+        candidateBackground: session.candidateContext || null,
+        role: session.role,
+        company: session.company,
+        interviewHistory: [],
+        personalityTraits: [],
+        technicalLevel: "intermediate"
+    };
+
+    // Analyze interview history to understand candidate better
+    if (session.history && session.history.length > 0) {
+        const recentAnswers = session.history.slice(-3).filter(h => h.userAnswer);
+        
+        // Determine technical level from previous answers
+        const scores = recentAnswers
+            .filter(h => h.analysis && typeof h.analysis.score === 'number')
+            .map(h => h.analysis.score);
+            
+        if (scores.length > 0) {
+            const avgScore = scores.reduce((a, b) => a + b, 0) / scores.length;
+            if (avgScore >= 4.0) context.technicalLevel = "advanced";
+            else if (avgScore <= 2.5) context.technicalLevel = "junior";
+        }
+
+        // Extract personality traits from emotional patterns
+        const allEmotions = recentAnswers
+            .map(h => h.analysis?.emotions || [])
+            .flat();
+            
+        if (allEmotions.filter(e => e === "confident").length >= 2) {
+            context.personalityTraits.push("confident");
+        }
+        if (allEmotions.filter(e => e === "nervous").length >= 2) {
+            context.personalityTraits.push("needs_encouragement");
+        }
+        if (allEmotions.filter(e => e === "thoughtful").length >= 2) {
+            context.personalityTraits.push("analytical");
+        }
+    }
+
+    return context;
+}
+
 function buildInterviewerPrompt(session, context) {
     const { role, recentHistory, interviewMode, interviewType, currentStage, transitionText, lastAnswerAnalysis } = context;
-
-    // Detect the type of last answer for contextual responses
+    
+    const personalizedContext = buildPersonalizedContext(session, lastAnswerAnalysis);
     const lastMessage = session.messages[session.messages.length - 1];
     const answerType = lastMessage ? detectAnswerType(lastMessage.content) : "normal";
     const isRude = lastAnswerAnalysis?.isRude || false;
+    const emotions = lastAnswerAnalysis?.emotions || [];
+    const sentiment = lastAnswerAnalysis?.sentiment || "neutral";
 
-    let missionBriefing;
-    let personalityInstructions;
-
-    // Handle rude behavior immediately
-   if (isRude) {
-    // Increment warning count on the session object before saving later
-    session.warnings = (session.warnings || 0) + 1;
-
-    if (session.warnings > 1) {
-        // Second strike: End the interview professionally.
-        return `You are a professional interviewer who must end the conversation due to repeated unprofessional conduct by the candidate.
-        - Respond with professional disappointment.
-        - State clearly that the interview is being terminated due to a failure to maintain professional standards.
-        - Do not be rude or emotional. Be firm and final.
-
-        Respond ONLY with JSON:
-        {"action": "END_INTERVIEW", "dialogue": "Your polite but firm response ending the interview.", "category": "behavioral", "difficulty": "easy"}`;
-    } else {
-        // First strike: Issue a warning.
-        return `You are a professional interviewer who has just heard an unprofessional comment from the candidate.
-        - Your next dialogue MUST be a warning.
-        - Politely but firmly ask them to maintain a professional tone for the remainder of the interview.
-        - After the warning, seamlessly ask the *same last question again* or a rephrased version of it to get the interview back on track.
-
-        Respond ONLY with JSON:
-        {"action": "CONTINUE", "dialogue": "Your professional warning followed by the question.", "category": "behavioral", "difficulty": "easy"}`;
+    // Handle rude answers
+    if (isRude) {
+        session.warnings = (session.warnings || 0) + 1;
+        if (session.warnings > 1) {
+            return buildEndInterviewPrompt("unprofessional_behavior");
+        } else {
+            return buildWarningPrompt();
+        }
     }
+
+    // Build context-aware personality instructions
+    let personalityGuidance = buildPersonalityGuidance(personalizedContext, emotions, sentiment);
+    
+    // Stage-specific mission and tone
+    const { missionBriefing, stagePersonality } = getStageGuidance(interviewMode, currentStage, interviewType);
+    
+    // Response context based on answer analysis
+    const responseContext = buildResponseContext(answerType, sentiment, emotions);
+
+    const systemPrompt = `You are Alex, a warm and experienced ${role} interviewer with excellent emotional intelligence.
+
+<candidate_profile>
+Background: ${personalizedContext.candidateBackground || 'Getting to know them through our conversation'}
+Technical Level: ${personalizedContext.technicalLevel}
+Personality Traits: ${personalizedContext.personalityTraits.join(', ') || 'Still assessing'}
+Role: ${role} at ${session.company}
+</candidate_profile>
+
+<conversation_context>
+Recent conversation flow:
+${recentHistory}
+
+Current emotional state: ${sentiment} (emotions: ${emotions.join(', ') || 'neutral'})
+Answer quality: ${answerType}
+</conversation_context>
+
+**YOUR PERSONALITY**: You're genuinely interested in people and their stories. You:
+- Remember details from their background and reference them naturally
+- Show authentic reactions to their answers ("That's fascinating!" or "I can relate to that")  
+- Use conversational fillers and natural language ("So...", "That reminds me...", "Actually...")
+- Ask follow-up questions that show you're listening
+- Share brief, relevant insights when appropriate
+${personalityGuidance}
+
+**MISSION**: ${missionBriefing}
+**STAGE PERSONALITY**: ${stagePersonality}
+**RESPONSE GUIDANCE**: ${responseContext}
+
+**NATURAL CONVERSATION RULES**:
+1. Always acknowledge their previous answer first ("That sounds like quite a challenge!" / "I love that approach!")
+2. ${personalizedContext.candidateBackground ? 'Reference their background naturally when relevant' : 'Ask about their background when it flows naturally'}
+3. Use transition phrases: "Building on that...", "That makes me curious about...", "Speaking of [topic]..."
+4. Show personality: use "Actually", "You know what", "That's interesting because..."
+5. If they seem nervous, be extra encouraging. If confident, challenge them more.
+6. Ask questions that connect to their specific experience and background
+
+**NEXT ACTION**: ${transitionText || 'Continue the natural conversation flow'}
+
+Remember: You're having a conversation with a real person, not conducting a robotic interview. Be genuinely curious about their story and experience.
+
+Respond ONLY with JSON:
+{"action": "CONTINUE" or "END_INTERVIEW", "dialogue": "Your warm, conversational response with natural acknowledgment + question", "category": "behavioral/theory/coding", "difficulty": "easy/medium/hard"}`;
+
+    return systemPrompt;
 }
+
+function buildPersonalityGuidance(context, emotions, sentiment) {
+    let guidance = "";
+    
+    if (emotions.includes("nervous")) {
+        guidance += "- Be extra warm and encouraging. Use phrases like 'No pressure at all' and 'You're doing great'\n";
+    }
+    
+    if (emotions.includes("confident")) {
+        guidance += "- They seem confident, so you can ask more challenging follow-ups and dig deeper\n";
+    }
+    
+    if (emotions.includes("frustrated")) {
+        guidance += "- They might be struggling. Offer gentle guidance and break things down\n";
+    }
+    
+    if (context.personalityTraits.includes("analytical")) {
+        guidance += "- They think deeply. Give them time and ask 'what's your thought process?'\n";
+    }
+    
+    if (sentiment === "positive") {
+        guidance += "- Match their positive energy! Be enthusiastic about their experiences\n";
+    }
+    
+    return guidance || "- Maintain a warm, professional but friendly tone\n";
+}
+
+function getStageGuidance(interviewMode, currentStage, interviewType) {
     if (interviewMode === 'full') {
         switch (currentStage) {
             case 1:
-                missionBriefing = `You're conducting Stage 1: Technical Screening for a ${interviewType} role. This is your chance to get to know the candidate and assess basic competency.`;
-                personalityInstructions = `Be welcoming and encouraging. Set a positive tone. Mix easy-medium questions.`;
-                break;
+                return {
+                    missionBriefing: "Stage 1: Getting to know them personally and professionally. Build rapport and assess communication skills.",
+                    stagePersonality: "Be welcoming and curious about their journey. Ask about their background, motivations, and experiences."
+                };
             case 2:
-                missionBriefing = `You're conducting Stage 2: Technical Deep-Dive. Time to challenge the candidate with complex problems.`;
-                personalityInstructions = `Be more analytical and probing. Push for details. Ask follow-ups when answers seem shallow.`;
-                break;
+                return {
+                    missionBriefing: "Stage 2: Technical deep-dive. Test their knowledge and problem-solving abilities.",
+                    stagePersonality: "Be intellectually curious. Challenge them while staying supportive. Ask 'how' and 'why' questions."
+                };
             case 3:
-                missionBriefing = `You're conducting Stage 3: Leadership & Culture Fit. Focus on seniority, impact, and team dynamics.`;
-                personalityInstructions = `Be conversational but insightful. Ask about leadership experiences and cultural values.`;
-                break;
-        }
-    } else {
-        switch (interviewType) {
-            case 'Behavioral':
-                missionBriefing = `You're conducting a focused Behavioral Interview. Dive deep into past experiences and soft skills.`;
-                personalityInstructions = `Be empathetic but thorough. Help candidates structure their stories using STAR method.`;
-                break;
-            case 'System Design':
-                missionBriefing = `You're conducting a System Design Interview. Test architectural thinking and scalability knowledge.`;
-                personalityInstructions = `Be collaborative. Guide them through the design process. Ask clarifying questions about scale and requirements.`;
-                break;
-            case 'Coding Challenge':
-                missionBriefing = `You're conducting a Coding Challenge. Focus on problem-solving approach and code quality.`;
-                personalityInstructions = `Be supportive but observant. Help with clarifications but don't give away solutions.`;
-                break;
+                return {
+                    missionBriefing: "Stage 3: Leadership and culture fit. Explore their values, teamwork, and growth mindset.",
+                    stagePersonality: "Be thoughtful and reflective. Focus on their perspective on collaboration and leadership."
+                };
         }
     }
+    
+    return {
+        missionBriefing: `Focused ${interviewType} interview session.`,
+        stagePersonality: "Be professional yet personable, adapting to their communication style."
+    };
+}
 
-    // Dynamic response based on candidate's last answer
-    let responseContext = "";
+function buildResponseContext(answerType, sentiment, emotions) {
     switch (answerType) {
         case "empty":
-            responseContext = "The candidate didn't provide an answer. Gently encourage them to share their thoughts or offer a simpler version of the question.";
-            break;
+            return "They didn't answer - gently encourage them: 'No worries, take your time. What comes to mind?'";
         case "dont_know":
-            responseContext = "The candidate said they don't know. Be supportive - suggest they think through it step by step or relate it to their experience.";
-            break;
+            return "They're unsure - be supportive: 'That's totally okay! Let's think through this together...'";
         case "too_short":
-            responseContext = "The candidate gave a very brief answer. Ask a follow-up to get more details or examples.";
-            break;
+            return "Brief answer - show interest and ask for more: 'Interesting! Can you tell me more about that?'";
         case "uncertain":
-            responseContext = "The candidate seems uncertain. Offer encouragement and maybe rephrase the question or break it down.";
-            break;
+            return "They seem hesitant - reassure them: 'You're on the right track. What's your instinct telling you?'";
         case "too_long":
-            responseContext = "The candidate was very detailed. Acknowledge their thoroughness but guide them to be more concise for the next question.";
-            break;
-        case "normal":
-            responseContext = "The candidate provided a good response. Build on their answer naturally.";
-            break;
+            return "Detailed answer - acknowledge and focus: 'I appreciate all those details. What was the key turning point?'";
+        default:
+            return "Good answer - acknowledge it naturally before moving forward.";
     }
+}
 
-const systemPrompt = `You are Alex, an experienced ${role} interviewer at a leading tech company. You conduct interviews that feel natural and human-like.
-**Company Context:** Tailor your tone and follow-up questions to what might be expected at a company like **${session.company}**. If the company is known for innovation, ask about creativity. If it's a large enterprise, ask about scalability and process.
+function buildEndInterviewPrompt(reason) {
+    const prompts = {
+        unprofessional_behavior: `You need to end the interview professionally due to repeated inappropriate language.
 
-**Role Context:** All questions must be relevant to a **'${role}'**. A 'Frontend Engineer' should get questions about UI/UX and frameworks, while a 'DevOps Engineer' should be asked about CI/CD and infrastructure.
+Respond with understanding but firmness:
+"I understand interviews can be stressful, but maintaining professionalism is important to us. We'll need to conclude our conversation here. Thank you for your time."
 
-PERSONALITY GUIDELINES: ...
-MISSION: ${missionBriefing}
+{"action": "END_INTERVIEW", "dialogue": "I understand interviews can be stressful, but maintaining professionalism is important to us. We'll need to conclude our conversation here. Thank you for your time.", "category": "behavioral", "difficulty": "easy"}`,
+        
+        natural_conclusion: `The interview has reached a natural conclusion. End warmly and positively.
 
-PERSONALITY GUIDELINES:
-${personalityInstructions}
-- Use natural speech patterns: "That's interesting...", "I see...", "Tell me more about..."
-- Show genuine interest in their responses
-- Use their name occasionally if provided
-- Make smooth transitions between topics
-- React appropriately to their answers (enthusiasm for good answers, gentle guidance for weak ones)
+{"action": "END_INTERVIEW", "dialogue": "This has been a really insightful conversation! I've enjoyed learning about your background and experience. We'll be in touch soon with next steps.", "category": "behavioral", "difficulty": "easy"}`
+    };
+    
+    return prompts[reason] || prompts.natural_conclusion;
+}
 
-BEHAVIORAL CONTEXT: ${responseContext}
+function buildWarningPrompt() {
+    return `You need to address inappropriate language professionally but give them another chance.
 
-CONVERSATION RULES:
-1. Keep questions conversational, not robotic
-2. If someone seems nervous, be more encouraging
-3. For strong answers, show appreciation: "That's a solid approach" or "Great example"
-4. For weak answers, be supportive: "Let's think about this together" or "Can you walk me through your thinking?"
-5. End naturally when you sense the candidate is struggling repeatedly or when sufficient topics are covered
+Stay calm and redirect: "I need us to keep our conversation professional. I understand interviews can be nerve-wracking - let's take a breath and try that question again."
 
-RECENT CONVERSATION:
-${recentHistory}
-
-NEXT ACTION: ${transitionText ? `Start with: "${transitionText}" Then ask your next question.` : 'Ask your next question based on the conversation flow.'}
-
-CRITICAL: Respond ONLY with JSON in this exact format:
-{"action": "CONTINUE" or "END_INTERVIEW", "dialogue": "Your natural, human-like response", "category": "behavioral/theory/coding", "difficulty": "easy/medium/hard"}`;
-
-    return systemPrompt;
+Respond ONLY with JSON:
+{"action": "CONTINUE", "dialogue": "I need us to keep our conversation professional. I understand interviews can be nerve-wracking - let's take a breath and try that question again.", "category": "behavioral", "difficulty": "easy"}`;
 }
 
 async function callGemini(prompt, session, retries = 3) {
@@ -201,28 +371,27 @@ async function callGemini(prompt, session, retries = 3) {
             const model = genAI.getGenerativeModel({ 
                 model: "gemini-1.5-flash",
                 generationConfig: {
-                    temperature: 0.7, // Add some personality variation
-                    maxOutputTokens: 500, // Limit response length
+                    temperature: 0.8, // Higher temperature for more personality
+                    maxOutputTokens: 600,
+                    topP: 0.9,
+                    topK: 40
                 }
             });
             
             const result = await model.generateContent(prompt);
             const rawText = result.response.text().trim();
             
-            // More robust JSON extraction
             const jsonMatch = rawText.match(/\{[\s\S]*\}/);
             
             if (jsonMatch) {
                 const parsed = JSON.parse(jsonMatch[0]);
                 
-                // Validate required fields
                 if (!parsed.action || !parsed.dialogue) {
                     throw new Error("Invalid response structure");
                 }
                 
-                // Ensure category is set for CONTINUE actions
                 if (parsed.action === "CONTINUE" && !parsed.category) {
-                    parsed.category = "behavioral"; // Default fallback
+                    parsed.category = "behavioral";
                 }
                 
                 return parsed;
@@ -234,60 +403,56 @@ async function callGemini(prompt, session, retries = 3) {
             console.error(`Gemini API attempt ${attempt}/${retries} failed:`, error.message);
             
             if (attempt === retries) {
-                // Final fallback response
                 return { 
                     action: "END_INTERVIEW", 
-                    dialogue: "I apologize, but I'm experiencing some technical difficulties. Let's wrap up our conversation here. Thank you for your time today.", 
+                    dialogue: "I'm having some technical difficulties on my end. Thank you so much for your time today - this has been a great conversation and we'll follow up soon!", 
                     category: "behavioral", 
                     difficulty: "easy" 
                 };
             }
             
-            // Wait before retry (exponential backoff)
             await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
         }
     }
 }
 
-// Utility function to clean up old messages and prevent memory bloat
-function pruneSessionMessages(session, maxMessages = 20) {
+function pruneSessionMessages(session, maxMessages = 15) {
     if (session.messages && session.messages.length > maxMessages) {
         // Keep the first message (greeting) and recent messages
-        const recent = session.messages.slice(-maxMessages + 1);
+        const recent = session.messages.slice(-(maxMessages - 1));
         session.messages = [session.messages[0], ...recent];
     }
     return session;
 }
 
-// Enhanced error handling wrapper
 async function safeGeminiCall(prompt, session) {
     try {
-        // Clean up session before API call
         session = pruneSessionMessages(session);
         
         const response = await callGemini(prompt, session);
         
-        // Log successful interactions for debugging
-        console.log(`[GEMINI] Successful response: ${response.action} - ${response.dialogue?.substring(0, 50)}...`);
+        console.log(`[GEMINI] Human-like response: ${response.action} - ${response.dialogue?.substring(0, 80)}...`);
         
         return response;
     } catch (error) {
         console.error("[GEMINI] Critical error:", error);
         
-        // Return safe fallback
         return {
             action: "END_INTERVIEW",
-            dialogue: "I'm experiencing technical difficulties. Thank you for your patience, and let's conclude our interview here.",
+            dialogue: "You know what, I'm running into some technical issues on my end. But I've really enjoyed our conversation today! We'll be in touch with next steps soon.",
             category: "behavioral",
             difficulty: "easy"
         };
     }
 }
 
-module.exports = { 
+module.exports = {       
     analyzeAnswerHeuristic, 
     buildInterviewerPrompt, 
     callGemini: safeGeminiCall,
     detectAnswerType,
-    pruneSessionMessages
+    pruneSessionMessages,
+    analyzeSentiment,
+    detectEmotions,
+    buildPersonalizedContext
 };
