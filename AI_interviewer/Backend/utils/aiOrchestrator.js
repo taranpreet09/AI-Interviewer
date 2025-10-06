@@ -369,7 +369,7 @@ async function callGemini(prompt, session, retries = 3) {
     for (let attempt = 1; attempt <= retries; attempt++) {
         try {
             const model = genAI.getGenerativeModel({ 
-                model: "gemini-1.5-flash",
+                model: "gemini-2.0-flash",
                 generationConfig: {
                     temperature: 0.8, // Higher temperature for more personality
                     maxOutputTokens: 600,

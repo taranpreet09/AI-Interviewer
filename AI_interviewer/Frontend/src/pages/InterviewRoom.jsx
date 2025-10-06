@@ -179,18 +179,23 @@ const InterviewRoom = () => {
 }
     };
 
-    const handleEndInterview = async () => {
-        if (!window.confirm("Are you sure you want to end the interview?")) return;
-        try {
-            const finalAnswer = isCodingQuestion ? code : transcript;
-            await axios.post(`${API_URL}/end/${sessionId}`, { finalAnswer: finalAnswer.trim() });
+// This is the NEW, corrected code
+const handleEndInterview = async () => {
+    if (!window.confirm("Are you sure you want to end the interview?")) return;
+    try {
+        const finalAnswer = isCodingQuestion ? code : transcript;
+        await axios.post(`${API_URL}/end/${sessionId}`, { finalAnswer: finalAnswer.trim() });
+
+        // Add a delay before navigating to ensure the final answer is processed
+        setTimeout(() => {
             navigate(`/report/${sessionId}`);
-        } catch (error) {
-            console.error("Failed to end interview:", error);
-            alert("Could not end the interview. Please try again.");
-        }
-    };
-    
+        }, 1500); // 1.5-second delay
+
+    } catch (error) {
+        console.error("Failed to end interview:", error);
+        alert("Could not end the interview. Please try again.");
+    }
+};
     // Show loading state until session is initialized
     if (!sessionInitialized) {
         return (

@@ -346,12 +346,31 @@ router.post('/next-step', async (req, res) => {
         }
 
         // Add user message to conversation history
-        if (answer !== undefined) {
-            session.messages.push({ role: 'user', content: answer });
-        }
-        
-        // Build enhanced conversation context with memory
-        const conversationContext = buildConversationContext(session, promptContext);
+        // Add user message to conversation history
+if (answer !== undefined) {
+    session.messages.push({ role: 'user', content: answer });
+}
+
+// --- START: NEW CODE TO FIX THE BUG ---
+// Check if the session has just been completed and needs to send a final message.
+if (session.status === 'completed') {
+    const closingMessage = "This has been a really insightful conversation! I've enjoyed learning about your background and experience. We'll be in touch soon with next steps.";
+
+    session.messages.push({ role: 'assistant', content: closingMessage });
+    await session.save();
+
+    return res.json({
+        action: "END_INTERVIEW",
+        dialogue: closingMessage,
+        currentStage: session.currentStage,
+        sessionStatus: session.status,
+        conversationContext: {}
+    });
+}
+// --- END: NEW CODE TO FIX THE BUG ---
+
+// Build enhanced conversation context with memory
+const conversationContext = buildConversationContext(session, promptContext);
         promptContext.recentHistory = conversationContext;
         
         // Generate AI response with enhanced context

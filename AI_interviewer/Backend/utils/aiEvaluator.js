@@ -10,7 +10,7 @@ async function callAiForJson(prompt, maxRetries = 3, timeoutMs = 15000, maxOutpu
     while (retries > 0) {
         try {
             const model = genAI.getGenerativeModel({
-                model: "gemini-1.5-flash",
+                model: "gemini-2.0-flash",
                 generationConfig: {
                     responseMimeType: "application/json",
                     temperature: 0.1, // Lower temperature for more consistent responses
