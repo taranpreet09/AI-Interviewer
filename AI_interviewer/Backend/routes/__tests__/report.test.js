@@ -1,89 +1,80 @@
-// routes/__tests__/report.test.js
+// AI_interviewer/Backend/routes/__tests__/report.test.js
 
 const request = require('supertest');
 const app = require('../../server');
 const mongoose = require('mongoose');
 const Session = require('../../models/session');
 const Question = require('../../models/Question');
+const Report = require('../../models/report.model');
 
-// --- Mocking Setup ---
-// We import the module we want to mock
-const aiEvaluator = require('../../utils/aiEvaluator');
-
-// This line tells Jest to replace the actual aiEvaluator module with a mock version.
-// All functions exported from aiEvaluator (e.g., evaluateBehavioral) will be replaced with dummy functions.
-jest.mock('../../utils/aiEvaluator');
-// --- End Mocking Setup ---
-
+jest.mock('../../services/reportWorker', () => ({
+    reportQueue: {
+        add: jest.fn().mockResolvedValue(null),
+    },
+}));
 
 describe('Report API Endpoints', () => {
     let testSession;
-    let behavioralQuestion, theoryQuestion;
+    let behavioralQuestion;
 
-    // Before all tests, connect to the database and create some sample questions
     beforeAll(async () => {
-        behavioralQuestion = await new Question({ text: 'Tell me about a time you worked in a team.', category: 'behavioral', difficulty: 'medium', source: 'seed' }).save();
-        theoryQuestion = await new Question({ text: 'What is a REST API?', category: 'theory', difficulty: 'medium', source: 'seed', idealAnswer: 'An API that follows REST constraints.' }).save();
+        behavioralQuestion = await new Question({
+            text: 'Tell me about a time you worked in a team.',
+            category: 'behavioral',
+            difficulty: 'medium',
+            source: 'seed',
+            idealAnswer: 'A good answer would describe the situation, the task, the action, and the result.'
+        }).save();
     });
 
-    // Before each test, create a realistic, completed session with history
     beforeEach(async () => {
         testSession = await new Session({
             role: 'Software Engineer',
-            interviewType: 'Full Stack Engineer',
-            interviewMode: 'full',
-            status: 'completed', // The session must be 'completed' for the report to generate
-            history: [
-                { question: behavioralQuestion._id, userAnswer: 'I worked well with my team on a challenging project.' },
-                { question: theoryQuestion._id, userAnswer: 'It is a type of web service.' }
-            ]
+            interviewType: 'Behavioral',
+            interviewMode: 'specific',
+            status: 'completed',
+            history: [{
+                question: behavioralQuestion._id,
+                userAnswer: 'I collaborated with my team to deliver the project on time.'
+            }]
         }).save();
-
-        // Before each test, we also clear any previous mock usage history
-        jest.clearAllMocks();
     });
 
-    // After all tests, clean up the questions and close the DB connection
+    afterEach(async () => {
+        await Session.deleteMany({});
+        await Report.deleteMany({});
+    });
+
     afterAll(async () => {
         await Question.deleteMany({});
-        await Session.deleteMany({});
         await mongoose.connection.close();
     });
 
 
-    describe('GET /api/analyze/session/:sessionId', () => {
+    describe('GET /api/report/analyze/session/:sessionId', () => {
 
-        it('should generate a report using mocked AI evaluations', async () => {
-            // 1. Arrange: Configure our mock functions to return predictable data
-            // We use .mockResolvedValue() because the original functions are async
-            aiEvaluator.evaluateBehavioral.mockResolvedValue({ score: 4.2, details: 'Good STAR method.', tips: 'Add more metrics.' });
-            aiEvaluator.evaluateTheory.mockResolvedValue({ score: 3.5, details: 'Correct but lacks depth.', tips: 'Explain the constraints.' });
-            aiEvaluator.generateFinalSummary.mockResolvedValue({ strengths: 'Clear communication.', weaknesses: 'Needs more technical detail.', nextSteps: 'Study REST principles.' });
+        it('should start the report generation and return a 202 status', async () => {
+            const {
+                reportQueue
+            } = require('../../services/reportWorker');
 
-            // 2. Act: Call the API endpoint
             const response = await request(app)
-                .get(`/api/analyze/session/${testSession._id}`);
+                .get(`/api/report/analyze/session/${testSession._id}`);
 
-            // 3. Assert: Check the results
-            // Check the HTTP response
-            expect(response.statusCode).toBe(200);
-            expect(response.body).toHaveProperty('overallScore');
-            expect(response.body).toHaveProperty('summary');
-            expect(response.body.summary.strengths).toBe('Clear communication.'); // Check if our mocked summary was used
+            expect(response.statusCode).toBe(202);
+            expect(response.body).toHaveProperty('reportId');
 
-            // Check that the detailed feedback matches our mocked data
-            expect(response.body.detailedFeedback.length).toBe(2);
-            expect(response.body.detailedFeedback[0].score).toBe(4.2);
+            // Use expect.objectContaining to avoid strict type checks on ObjectId
+            expect(reportQueue.add).toHaveBeenCalledWith(
+                'generate-report',
+                expect.objectContaining({
+                    sessionId: testSession._id.toString(),
+                })
+            );
 
-            // Check that our mock functions were called correctly
-            expect(aiEvaluator.evaluateBehavioral).toHaveBeenCalledTimes(1);
-            expect(aiEvaluator.evaluateTheory).toHaveBeenCalledTimes(1);
-            expect(aiEvaluator.generateFinalSummary).toHaveBeenCalledTimes(1);
-
-            // Check that the report was saved to the database
-            const sessionInDb = await Session.findById(testSession._id);
-            expect(sessionInDb.report).not.toBeNull();
-            expect(sessionInDb.report.overallScore).toBeGreaterThan(0);
+            // You can also add a separate assertion to ensure reportId exists in the call
+            const queuePayload = reportQueue.add.mock.calls[0][1];
+            expect(queuePayload).toHaveProperty('reportId');
         });
     });
 });
