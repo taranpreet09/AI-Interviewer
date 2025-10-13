@@ -138,70 +138,18 @@
 // });
 
 // module.exports = router;
+// In routes/report.js
+
+// In routes/report.js
+// routes/report.js
 const express = require('express');
 const router = express.Router();
 const Report = require('../models/report.model');
-const Session = require('../models/session'); // Import the Session model
-const { reportQueue } = require('../services/reportWorker');
 
-// This endpoint starts the report generation
-router.get('/analyze/session/:sessionId', async (req, res) => {
-    const { sessionId } = req.params;
-
-    try {
-        // 1. Check if a completed report already exists to avoid re-doing work
-        const existingReport = await Report.findOne({ session: sessionId, status: 'completed' });
-        if (existingReport) {
-            console.log(`[API] Returning existing completed report for session: ${sessionId}`);
-            return res.json(existingReport);
-        }
-        
-        // 2. Check if a report is already being generated
-        const processingReport = await Report.findOne({ session: sessionId, status: { $in: ['pending', 'processing'] } });
-        if (processingReport) {
-            console.log(`[API] Report generation already in progress for session: ${sessionId}`);
-            return res.status(202).json({
-                message: "Report generation is already in progress.",
-                reportId: processingReport._id
-            });
-        }
-
-        // 3. Fetch the session data to get the required fields (like 'role')
-        const session = await Session.findById(sessionId);
-        if (!session) {
-            return res.status(404).json({ message: "Session to be reported on was not found." });
-        }
-
-        // 4. Create the new report document WITH the required fields
-        const newReport = new Report({
-            session: sessionId,
-            status: 'pending',
-            role: session.role,      // <-- THE FIX: Required field is now included
-            company: session.company // <-- Also including company
-        });
-        await newReport.save();
-
-        // 5. Add the job to the queue for the worker to process
-        await reportQueue.add('generate-report', { 
-            reportId: newReport._id, 
-            sessionId: sessionId 
-        });
-
-        console.log(`[API] Job added to queue for reportId: ${newReport._id}`);
-
-        // 6. Immediately respond to the user
-        res.status(202).json({
-            message: "Report generation has been started.",
-            reportId: newReport._id
-        });
-
-    } catch (error) {
-        console.error("[API] Error starting report generation:", error);
-        res.status(500).json({ message: "Failed to start report generation." });
-    }
-});
-
-// This endpoint allows the frontend to check the report's status
+/**
+ * Checks the status of a report by its Report ID.
+ * This is the primary way for a client to poll for results.
+ */
 router.get('/status/:reportId', async (req, res) => {
     try {
         const { reportId } = req.params;
@@ -220,6 +168,30 @@ router.get('/status/:reportId', async (req, res) => {
     } catch (error) {
         console.error("[API] Error fetching report status:", error);
         res.status(500).json({ message: "Error fetching report status." });
+    }
+});
+
+/**
+ * Finds a report using a Session ID and redirects to the status endpoint.
+ */
+router.get('/session/:sessionId', async (req, res) => {
+    try {
+        const { sessionId } = req.params;
+        const report = await Report.findOne({ session: sessionId });
+
+        if (!report) {
+            return res.status(404).json({ 
+                message: "Report not found. The session may still be in progress or was not completed successfully.",
+                status: 'not_found'
+            });
+        }
+        
+        const redirectUrl = `/api/report/status/${report._id}`;
+        res.redirect(307, redirectUrl);
+
+    } catch (error) {
+        console.error("[API] Error fetching report by session:", error);
+        res.status(500).json({ message: "Error fetching report by session." });
     }
 });
 

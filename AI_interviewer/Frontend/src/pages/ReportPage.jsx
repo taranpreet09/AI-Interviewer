@@ -24,7 +24,7 @@ const ReportPage = () => {
             try {
                 // Step 1: Start report generation
                 console.log('Starting report generation...');
-                const response = await axios.get(`${API_URL}/report/analyze/session/${sessionId}`);
+                const response = await axios.get(`${API_URL}/report/session/${sessionId}`);
                 
                 // Step 2: Handle different response scenarios
                 if (response.status === 200 && response.data.status === 'completed') {

@@ -6,6 +6,8 @@ const Question = require('../models/Question');
 const { generateAiQuestion } = require('../utils/aiQuestionGen');
 const { analyzeAnswerHeuristic, buildInterviewerPrompt, callGemini } = require('../utils/aiOrchestrator');
 const { evaluateBehavioral, evaluateTheory, evaluateCoding } = require('../utils/aiEvaluator');
+const { finalizeSessionAndStartReport } = require('../services/sessionManager');
+
 const router = express.Router();
 
 // Enhanced greeting generation based on candidate context
@@ -357,8 +359,7 @@ if (session.status === 'completed') {
     const closingMessage = "This has been a really insightful conversation! I've enjoyed learning about your background and experience. We'll be in touch soon with next steps.";
 
     session.messages.push({ role: 'assistant', content: closingMessage });
-    await session.save();
-
+     await finalizeSessionAndStartReport(session._id, 'natural_conclusion');
     return res.json({
         action: "END_INTERVIEW",
         dialogue: closingMessage,
@@ -412,7 +413,6 @@ const conversationContext = buildConversationContext(session, promptContext);
             session.endReason = 'natural_conclusion';
         }
 
-        await session.save();
         
         const responsePayload = { 
             ...aiResponse, 

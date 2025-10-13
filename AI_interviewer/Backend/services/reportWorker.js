@@ -1,10 +1,7 @@
 const { Worker, Queue } = require('bullmq');
 const IORedis = require('ioredis');
-// NOTE: These models are now defined in this file, so we don't require them from external files.
-// const Report = require('../models/report.model');
-// const Session = require('../models/session');
+const mongoose = require('mongoose');
 const { evaluateBehavioral, evaluateTheory, evaluateCoding, generateFinalSummary } = require('../utils/aiEvaluator');
-const mongoose = require('mongoose'); // <-- SINGLE DECLARATION FOR ALL SCHEMAS
 
 const connection = new IORedis(process.env.REDIS_URL, {
   maxRetriesPerRequest: null
@@ -150,31 +147,25 @@ const Session = mongoose.models.Session || mongoose.model('Session', sessionSche
 
 // --- Worker Queue and Logic ---
 const reportQueue = new Queue('report-generation', { connection });
-const delay = ms => new Promise(res => setTimeout(res, ms));
 
 const worker = new Worker('report-generation', async job => {
   const { reportId, sessionId } = job.data;
   console.log(`[WORKER] Starting report generation for reportId: ${reportId}`);
 
   try {
-    let session = null;
-    let attempts = 10;
-    const pollInterval = 2000;
-
-    console.log(`[WORKER] Waiting for session ${sessionId} to be marked 'completed'...`);
-    while (attempts > 0) {
-        session = await Session.findById(sessionId).populate('history.question');
-        if (session && session.status === 'completed') {
-            console.log(`[WORKER] Session is ready after ${11 - attempts} attempts.`);
-            break;
-        }
-        await delay(pollInterval);
-        attempts--;
-    }
+    //
+    // ▼▼▼ --- THE FIX --- ▼▼▼
+    // The polling 'while' loop is removed. We now fetch directly,
+    // as jobs will only be dispatched for sessions that are already 'completed'.
+    //
+    const session = await Session.findById(sessionId).populate('history.question');
 
     if (!session || session.status !== 'completed') {
-        throw new Error(`Session ${sessionId} was not 'completed' after waiting.`);
+        throw new Error(`Session ${sessionId} is not in a 'completed' state. Aborting report.`);
     }
+    //
+    // ▲▲▲ --- END OF THE FIX --- ▲▲▲
+    //
 
     await Report.findByIdAndUpdate(reportId, {
       status: 'processing',
