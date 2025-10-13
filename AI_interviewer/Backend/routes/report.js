@@ -142,13 +142,84 @@
 
 // In routes/report.js
 // routes/report.js
+// AI_interviewer/Backend/routes/report.js
+
 const express = require('express');
 const router = express.Router();
+const Session = require('../models/session');
 const Report = require('../models/report.model');
+const { reportQueue } = require('../services/reportWorker');
+
+/**
+ * Main endpoint to get or initiate a report for a session.
+ * This is the only endpoint the frontend should call initially.
+ * It will either return a completed report or start the generation process.
+ */
+router.get('/session/:sessionId', async (req, res) => {
+    const { sessionId } = req.params;
+
+    try {
+        // 1. Check if a report already exists for this session
+        let report = await Report.findOne({ session: sessionId });
+
+        if (report) {
+            // If the report is already complete, send it immediately
+            if (report.status === 'completed') {
+                console.log(`[API] Returning existing completed report ${report._id} for session ${sessionId}.`);
+                return res.status(200).json(report);
+            }
+            // If it's still being processed, tell the client to start polling
+            console.log(`[API] Report ${report._id} is already processing for session ${sessionId}.`);
+            return res.status(202).json({ 
+                reportId: report._id, 
+                message: "Report generation in progress." 
+            });
+        }
+
+        // 2. If no report exists, we need to create one and start the process
+        const session = await Session.findById(sessionId);
+        if (!session) {
+            return res.status(404).json({ message: "The interview session for this report could not be found." });
+        }
+
+        // IMPORTANT: Only create a report if the interview is actually finished
+        if (session.status !== 'completed') {
+             return res.status(400).json({ message: "The interview session is not yet complete. Please finish the interview first." });
+        }
+        
+        // Create the new report document with a 'pending' status
+        const newReport = new Report({
+            session: sessionId,
+            status: 'pending',
+            role: session.role,
+            company: session.company
+        });
+        await newReport.save();
+        
+        // Add the generation job to the queue for our background worker
+        await reportQueue.add('generate-report', {
+            reportId: newReport._id,
+            sessionId: sessionId
+        });
+
+        console.log(`[API] New report ${newReport._id} created and queued for session ${sessionId}.`);
+        
+        // Respond with 202 Accepted, telling the client to start polling this new reportId
+        return res.status(202).json({ 
+            reportId: newReport._id, 
+            message: "Report generation has been queued." 
+        });
+
+    } catch (error) {
+        console.error("[API] Error in /report/session/:sessionId endpoint:", error);
+        res.status(500).json({ message: "Server error while initiating report analysis." });
+    }
+});
+
 
 /**
  * Checks the status of a report by its Report ID.
- * This is the primary way for a client to poll for results.
+ * This is the endpoint the client will poll to check for completion.
  */
 router.get('/status/:reportId', async (req, res) => {
     try {
@@ -159,39 +230,17 @@ router.get('/status/:reportId', async (req, res) => {
             return res.status(404).json({ message: "Report not found." });
         }
 
+        // If the report is complete, send the full report data
         if (report.status === 'completed') {
             return res.status(200).json({ status: report.status, data: report });
         }
-
+        
+        // Otherwise, just send the current status (e.g., 'pending' or 'processing')
         res.status(200).json({ status: report.status });
 
     } catch (error) {
         console.error("[API] Error fetching report status:", error);
         res.status(500).json({ message: "Error fetching report status." });
-    }
-});
-
-/**
- * Finds a report using a Session ID and redirects to the status endpoint.
- */
-router.get('/session/:sessionId', async (req, res) => {
-    try {
-        const { sessionId } = req.params;
-        const report = await Report.findOne({ session: sessionId });
-
-        if (!report) {
-            return res.status(404).json({ 
-                message: "Report not found. The session may still be in progress or was not completed successfully.",
-                status: 'not_found'
-            });
-        }
-        
-        const redirectUrl = `/api/report/status/${report._id}`;
-        res.redirect(307, redirectUrl);
-
-    } catch (error) {
-        console.error("[API] Error fetching report by session:", error);
-        res.status(500).json({ message: "Error fetching report by session." });
     }
 });
 

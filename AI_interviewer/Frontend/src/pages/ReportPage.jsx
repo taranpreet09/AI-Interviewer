@@ -1,4 +1,4 @@
-// src/pages/ReportPage.jsx - FIXED VERSION
+// AI_interviewer/Frontend/src/pages/ReportPage.jsx
 
 import React, { useState, useEffect, useMemo } from 'react';
 import { useParams, Link } from 'react-router-dom';
@@ -14,96 +14,69 @@ const ReportPage = () => {
     const [report, setReport] = useState(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
-    const [loadingMessage, setLoadingMessage] = useState('Generating your detailed report...');
+    const [loadingMessage, setLoadingMessage] = useState('Initiating report generation...');
 
     useEffect(() => {
-        const fetchReport = async () => {
-            setLoading(true);
-            setError(null);
-            
-            try {
-                // Step 1: Start report generation
-                console.log('Starting report generation...');
-                const response = await axios.get(`${API_URL}/report/session/${sessionId}`);
-                
-                // Step 2: Handle different response scenarios
-                if (response.status === 200 && response.data.status === 'completed') {
-                    // Report is already completed
-                    console.log('Report already completed');
-                    setReport(response.data);
+        // This function will repeatedly check the report status until it's 'completed' or 'failed'
+        const pollForCompletion = async (reportId, maxAttempts = 40) => {
+            let attempts = 0;
+            const pollInterval = 3000; // Poll every 3 seconds
+
+            const poll = async () => {
+                if (attempts >= maxAttempts) {
+                    setError('Report generation is taking longer than expected. Please refresh the page in a moment.');
                     setLoading(false);
                     return;
                 }
+                attempts++;
+                setLoadingMessage(`Analyzing your responses... This may take up to a minute. (${attempts})`);
                 
-                if (response.status === 202) {
-                    // Report generation started, need to poll for status
-                    console.log('Report generation started, polling for completion...');
-                    const reportId = response.data.reportId;
-                    await pollForCompletion(reportId);
-                    return;
+                try {
+                    const statusResponse = await axios.get(`${API_URL}/report/status/${reportId}`);
+                    
+                    if (statusResponse.data.status === 'completed') {
+                        setReport(statusResponse.data.data);
+                        setLoading(false);
+                    } else if (statusResponse.data.status === 'failed') {
+                        setError('An error occurred during report generation. Please try again.');
+                        setLoading(false);
+                    } else {
+                        // If status is 'pending' or 'processing', poll again after the interval
+                        setTimeout(poll, pollInterval);
+                    }
+                } catch (pollError) {
+                    console.error('Polling error:', pollError);
+                    setError('Unable to check report status. Please refresh the page.');
+                    setLoading(false);
                 }
+            };
+            
+            // Start the polling process
+            poll();
+        };
+
+        const initiateReportGeneration = async () => {
+            try {
+                // This is the initial call to our new smart endpoint
+                const response = await axios.get(`${API_URL}/report/session/${sessionId}`);
                 
-                // Fallback for other scenarios
-                setReport(response.data);
-                setLoading(false);
-                
+                if (response.status === 200) {
+                    // Status 200 means the report was already generated and is complete
+                    setReport(response.data);
+                    setLoading(false);
+                } else if (response.status === 202) {
+                    // Status 202 means the report generation has started, so we begin polling
+                    const { reportId } = response.data;
+                    pollForCompletion(reportId);
+                }
             } catch (err) {
-                console.error("Failed to fetch report:", err);
-                setError('Failed to generate report. Please try again.');
+                console.error("Failed to fetch or generate report:", err);
+                setError(err.response?.data?.message || 'Failed to start report generation. The session may not be complete or may not exist.');
                 setLoading(false);
             }
         };
 
-        const pollForCompletion = async (reportId, maxAttempts = 30) => {
-            let attempts = 0;
-            const pollInterval = 2000; // 2 seconds
-            
-            const poll = async () => {
-                attempts++;
-                setLoadingMessage(`Analyzing your responses... (${attempts}/${maxAttempts})`);
-                
-                try {
-                    const statusResponse = await axios.get(`${API_URL}/report/status/${reportId}`);
-                    console.log(`Poll attempt ${attempts}:`, statusResponse.data);
-                    
-                    if (statusResponse.data.status === 'completed') {
-                        console.log('Report completed!');
-                        setReport(statusResponse.data.data);
-                        setLoading(false);
-                        return;
-                    }
-                    
-                    if (statusResponse.data.status === 'failed') {
-                        setError('Report generation failed. Please try again.');
-                        setLoading(false);
-                        return;
-                    }
-                    
-                    if (attempts >= maxAttempts) {
-                        setError('Report generation is taking longer than expected. Please refresh the page.');
-                        setLoading(false);
-                        return;
-                    }
-                    
-                    // Continue polling
-                    setTimeout(poll, pollInterval);
-                    
-                } catch (pollError) {
-                    console.error('Polling error:', pollError);
-                    if (attempts >= maxAttempts) {
-                        setError('Unable to check report status. Please refresh the page.');
-                        setLoading(false);
-                    } else {
-                        setTimeout(poll, pollInterval);
-                    }
-                }
-            };
-            
-            // Start polling
-            setTimeout(poll, 1000); // Start after 1 second
-        };
-
-        fetchReport();
+        initiateReportGeneration();
     }, [sessionId]);
 
     const groupedFeedback = useMemo(() => {
@@ -118,53 +91,58 @@ const ReportPage = () => {
         }, {});
     }, [report]);
 
-    // Loading state
-    if (loading) return (
-        <div className="flex flex-col justify-center items-center h-screen bg-gray-900 text-white">
-            <div className="text-2xl mb-4">{loadingMessage}</div>
-            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-cyan-400 mb-4"></div>
-            <p className="text-gray-400 text-center max-w-md">
-                Our AI is carefully analyzing each of your responses to provide detailed feedback. 
-                This process typically takes 30-60 seconds.
-            </p>
-        </div>
-    );
+    // --- RENDER LOGIC ---
 
-    // Error state
-    if (error) return (
-        <div className="flex flex-col justify-center items-center h-screen bg-gray-900 text-white">
-            <div className="text-2xl text-red-400 mb-4">Report Generation Error</div>
-            <p className="text-gray-400 mb-6 text-center max-w-md">{error}</p>
-            <div className="space-x-4">
-                <button 
-                    onClick={() => window.location.reload()} 
-                    className="bg-cyan-600 hover:bg-cyan-700 text-white font-bold py-2 px-4 rounded"
-                >
-                    Try Again
-                </button>
-                <Link 
-                    to="/" 
-                    className="bg-gray-600 hover:bg-gray-700 text-white font-bold py-2 px-4 rounded"
-                >
-                    Back to Home
-                </Link>
+    if (loading) {
+        return (
+            <div className="flex flex-col justify-center items-center h-screen bg-gray-900 text-white">
+                <div className="text-2xl mb-4">{loadingMessage}</div>
+                <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-cyan-400 mb-4"></div>
+                <p className="text-gray-400 text-center max-w-md">
+                    Our AI is carefully analyzing each of your responses to provide detailed feedback. 
+                    This process can sometimes take up to a minute.
+                </p>
             </div>
-        </div>
-    );
-
-    // Report not available
-    if (!report) return (
-        <div className="flex justify-center items-center h-screen bg-gray-900 text-white">
-            <div className="text-center">
-                <div className="text-2xl mb-4">Report Not Available</div>
-                <Link to="/" className="bg-cyan-600 hover:bg-cyan-700 text-white font-bold py-2 px-4 rounded">
-                    Start New Interview
-                </Link>
+        );
+    }
+    
+    if (error) {
+        return (
+            <div className="flex flex-col justify-center items-center h-screen bg-gray-900 text-white">
+                <div className="text-2xl text-red-400 mb-4">Report Generation Error</div>
+                <p className="text-gray-400 mb-6 text-center max-w-md">{error}</p>
+                <div className="space-x-4">
+                    <button 
+                        onClick={() => window.location.reload()} 
+                        className="bg-cyan-600 hover:bg-cyan-700 text-white font-bold py-2 px-4 rounded"
+                    >
+                        Try Again
+                    </button>
+                    <Link 
+                        to="/" 
+                        className="bg-gray-600 hover:bg-gray-700 text-white font-bold py-2 px-4 rounded"
+                    >
+                        Back to Home
+                    </Link>
+                </div>
             </div>
-        </div>
-    );
+        );
+    }
 
-    // Rest of your existing render logic...
+    if (!report) {
+         return (
+            <div className="flex justify-center items-center h-screen bg-gray-900 text-white">
+                <div className="text-center">
+                    <div className="text-2xl mb-4">Report Not Available</div>
+                    <p className="text-gray-400 mb-6">We could not find a report for this session.</p>
+                    <Link to="/" className="bg-cyan-600 hover:bg-cyan-700 text-white font-bold py-2 px-4 rounded">
+                        Start New Interview
+                    </Link>
+                </div>
+            </div>
+        );
+    }
+
     const radarData = [
         { subject: 'Behavioral', score: report.finalScores?.behavioral || 0, fullMark: 5 },
         { subject: 'Theory/Design', score: report.finalScores?.theory || 0, fullMark: 5 },
