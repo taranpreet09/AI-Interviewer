@@ -17,7 +17,7 @@ app.use(express.json());
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
-    origin: "http://localhost:5173",
+    origin: "http://localhost:5173", // Ensures connection from Vite's default port
     methods: ["GET", "POST"]
   }
 });
@@ -39,68 +39,51 @@ io.on('connection', (socket) => {
     }
 
     try {
-      const session = await Session.findById(sessionId).populate('history.question');
-      if (!session) {
-        return socket.emit('error', { message: 'Session not found.' });
+      const session = await Session.findById(sessionId);
+      if (!session || session.status === 'completed') {
+        return; // Don't process if session is already completed
       }
 
-      // Save user's answer
-      session.messages.push({ role: 'user', content: answer });
-      const lastItem = session.history[session.history.length - 1];
-      if (lastItem && !lastItem.userAnswer) {
-        lastItem.userAnswer = answer;
-      }
-
-      // Build AI prompt
-      const prompt = buildInterviewerPrompt(session, {
-        role: session.role,
-        recentHistory: session.messages.slice(-8).map(m => `${m.role}: ${m.content}`).join('\n'),
-        interviewMode: session.interviewMode,
-        interviewType: session.interviewType,
-        currentStage: session.currentStage
+      // Instead of duplicating logic, we make an internal API call to the existing route
+      const internalResponse = await fetch(`http://localhost:${PORT}/api/interview/next-step`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sessionId, answer }),
       });
-
-      // Call AI model
-      const aiResponse = await callGemini(prompt, session);
-      session.messages.push({ role: 'assistant', content: aiResponse.dialogue });
-
-      // ✅ FIX: Check for proper AI end condition
-      if (aiResponse.action === 'END_INTERVIEW') {
-        console.log(`AI is ending session ${sessionId}.`);
-        await session.save();
-        await finalizeSessionAndStartReport(sessionId, 'natural_conclusion');
-      } else {
-        await session.save();
-      }
-
-      // Send AI response back to frontend
-      socket.emit('ai-spoke', { ...aiResponse, currentStage: session.currentStage });
+      
+      const responseData = await internalResponse.json();
+      socket.emit('ai-spoke', responseData);
 
     } catch (error) {
       console.error("Error processing user speech:", error);
       socket.emit('ai-spoke', {
         action: "CONTINUE",
         dialogue: "I'm sorry, I encountered a small issue. Could you please repeat that?",
-        category: "behavioral",
-        difficulty: "easy"
       });
     }
   });
 
-  // ✅ ADD: Manual "End Interview" handler
+  // --- Manual "End Interview" handler ---
   socket.on('end-interview', async ({ sessionId }) => {
     if (sessionId) {
       console.log(`User manually ended session ${sessionId}. Finalizing.`);
-      await finalizeSessionAndStartReport(sessionId, 'user_ended');
+      // Add a brief delay to ensure the last 'user-spoke' event can be processed
+      setTimeout(async () => {
+          await finalizeSessionAndStartReport(sessionId, 'user_ended');
+      }, 1500); // 1.5-second delay
     }
   });
 
-  // ✅ FIXED: Proper disconnect handler using stored sessionId
+  // --- Disconnect handler using stored sessionId ---
   socket.on('disconnect', async () => {
     console.log('User disconnected:', socket.id);
     if (socket.sessionId) {
-      console.log(`Finalizing session ${socket.sessionId} due to disconnect.`);
-      await finalizeSessionAndStartReport(socket.sessionId, 'user_ended');
+      const session = await Session.findById(socket.sessionId);
+      // Only abandon if it was ongoing, to prevent issues with completed sessions
+      if (session && session.status === 'ongoing') {
+        console.log(`Finalizing session ${socket.sessionId} due to disconnect.`);
+        await finalizeSessionAndStartReport(socket.sessionId, 'user_ended');
+      }
     }
   });
 });

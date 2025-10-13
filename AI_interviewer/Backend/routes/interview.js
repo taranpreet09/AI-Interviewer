@@ -213,7 +213,6 @@ function updateSessionMemory(session, contextClues, currentAnswer) {
         session.conversationMemory.mentionedExperiences = session.conversationMemory.mentionedExperiences.slice(-10);
     }
 }
-
 router.post('/next-step', async (req, res) => {
     try {
         const { sessionId, answer } = req.body;
@@ -321,7 +320,6 @@ router.post('/next-step', async (req, res) => {
                 session.currentStage = 2;
                 promptContext.currentStage = 2;
                 
-                // Context-aware transition based on what we learned
                 if (session.conversationMemory && session.conversationMemory.technicalTopics.length > 0) {
                     const mentionedTech = session.conversationMemory.technicalTopics.slice(0, 2).join(' and ');
                     promptContext.transitionText = `I'm really enjoying learning about your background! Since you mentioned ${mentionedTech}, let's dive deeper into some technical areas.`;
@@ -333,7 +331,6 @@ router.post('/next-step', async (req, res) => {
                 session.currentStage = 3;
                 promptContext.currentStage = 3;
                 
-                // Reference their technical performance
                 const recentScores = session.history.slice(-3).filter(h => h.analysis?.score).map(h => h.analysis.score);
                 if (recentScores.length > 0 && recentScores.reduce((a, b) => a + b, 0) / recentScores.length >= 3.5) {
                     promptContext.transitionText = "I'm impressed with your technical depth! For our final section, I'd love to understand how you work with teams and handle challenges.";
@@ -347,39 +344,33 @@ router.post('/next-step', async (req, res) => {
             }
         }
 
-        // Add user message to conversation history
-        // Add user message to conversation history
-if (answer !== undefined) {
-    session.messages.push({ role: 'user', content: answer });
-}
+        if (answer !== undefined) {
+            session.messages.push({ role: 'user', content: answer });
+        }
 
-// --- START: NEW CODE TO FIX THE BUG ---
-// Check if the session has just been completed and needs to send a final message.
-if (session.status === 'completed') {
-    const closingMessage = "This has been a really insightful conversation! I've enjoyed learning about your background and experience. We'll be in touch soon with next steps.";
+        if (session.status === 'completed') {
+            const closingMessage = "This has been a really insightful conversation! I've enjoyed learning about your background and experience. We'll be in touch soon with next steps.";
 
-    session.messages.push({ role: 'assistant', content: closingMessage });
-     await finalizeSessionAndStartReport(session._id, 'natural_conclusion');
-    return res.json({
-        action: "END_INTERVIEW",
-        dialogue: closingMessage,
-        currentStage: session.currentStage,
-        sessionStatus: session.status,
-        conversationContext: {}
-    });
-}
-// --- END: NEW CODE TO FIX THE BUG ---
+            session.messages.push({ role: 'assistant', content: closingMessage });
+            await session.save(); // Save final session state
+            await finalizeSessionAndStartReport(session._id, 'natural_conclusion');
+            
+            return res.json({
+                action: "END_INTERVIEW",
+                dialogue: closingMessage,
+                currentStage: session.currentStage,
+                sessionStatus: session.status,
+                conversationContext: {}
+            });
+        }
 
-// Build enhanced conversation context with memory
-const conversationContext = buildConversationContext(session, promptContext);
+        const conversationContext = buildConversationContext(session, promptContext);
         promptContext.recentHistory = conversationContext;
         
-        // Generate AI response with enhanced context
         const prompt = buildInterviewerPrompt(session, promptContext);
         const aiResponse = await callGemini(prompt, session);
 
         if (aiResponse.action === 'CONTINUE' && session.status !== 'completed') {
-            // Create or find question with better context integration
             const questionDoc = await Question.findOneAndUpdate(
                 { text: aiResponse.dialogue },
                 { 
@@ -413,6 +404,7 @@ const conversationContext = buildConversationContext(session, promptContext);
             session.endReason = 'natural_conclusion';
         }
 
+        await session.save();
         
         const responsePayload = { 
             ...aiResponse, 
@@ -437,7 +429,6 @@ const conversationContext = buildConversationContext(session, promptContext);
         });
     }
 });
-
 // Helper function to build conversation context with memory
 function buildConversationContext(session, promptContext) {
     const recentMessages = session.messages.slice(-8); // More context for better continuity

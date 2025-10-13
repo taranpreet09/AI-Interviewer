@@ -15,30 +15,36 @@ const InterviewRoom = () => {
   const location = useLocation();
 
   const videoRef = useRef(null);
+  const typingIntervalRef = useRef(null); // Ref to hold the interval
 
   // --- State Management ---
   const [sessionInitialized, setSessionInitialized] = useState(false);
   const [isCodingQuestion, setIsCodingQuestion] = useState(false);
   const [code, setCode] = useState('');
   const [isAiSpeaking, setIsAiSpeaking] = useState(false);
-  const [aiFullText, setAiFullText] = useState('Initializing...');
   const [aiDisplayedText, setAiDisplayedText] = useState('Initializing...');
   const [currentStage, setCurrentStage] = useState(1);
   const [questionCount, setQuestionCount] = useState(0);
   const [interviewMode, setInterviewMode] = useState('specific');
+  const [micPermission, setMicPermission] = useState(true);
+  const [manualAnswer, setManualAnswer] = useState('');
 
   const { transcript, listening, resetTranscript } = useSpeechRecognition();
 
   // --- Effect Hooks ---
 
-  // 1. Camera Access
+  // 1. Camera and Mic Access
   useEffect(() => {
     navigator.mediaDevices
-      .getUserMedia({ video: true })
+      .getUserMedia({ video: true, audio: true })
       .then((stream) => {
         if (videoRef.current) videoRef.current.srcObject = stream;
+        setMicPermission(true);
       })
-      .catch((err) => console.error('Error accessing camera:', err));
+      .catch((err) => {
+        console.error('Error accessing camera/mic:', err);
+        setMicPermission(false);
+      });
     return () => {
       if (videoRef.current && videoRef.current.srcObject) {
         videoRef.current.srcObject.getTracks().forEach((track) => track.stop());
@@ -86,32 +92,40 @@ const InterviewRoom = () => {
 
   // --- Core Functions ---
 
-  // Text-to-Speech
+  // Text-to-Speech with improved typewriter effect
   const speak = (text) => {
     if (!text) return;
+    
+    // Clear any ongoing speech or typing
     window.speechSynthesis.cancel();
+    if (typingIntervalRef.current) {
+        clearInterval(typingIntervalRef.current);
+    }
+
     const utterance = new SpeechSynthesisUtterance(text);
-
-    // Reset states for new message
-    setAiFullText(text);
+    
+    // Reset displayed text
     setAiDisplayedText('');
-
-    // Gradual update while AI speaks
-    utterance.onboundary = (event) => {
-      if (event.name === 'word') {
-        setAiDisplayedText(text.substring(0, event.charIndex));
-      }
-    };
+    
+    // Start the typewriter effect
+    let i = 0;
+    typingIntervalRef.current = setInterval(() => {
+        if (i < text.length) {
+            setAiDisplayedText(prev => text.substring(0, i + 1));
+            i++;
+        } else {
+            clearInterval(typingIntervalRef.current);
+        }
+    }, 40); // Adjust speed as needed (lower is faster)
 
     utterance.onstart = () => setIsAiSpeaking(true);
 
     utterance.onend = () => {
-      setAiDisplayedText(text); // Ensure the full text is shown
+      // Ensure the full text is displayed and clean up
+      clearInterval(typingIntervalRef.current);
+      setAiDisplayedText(text);
       setIsAiSpeaking(false);
-      if (!isCodingQuestion) {
-        resetTranscript();
-        SpeechRecognition.startListening({ continuous: false });
-      }
+      resetTranscript();
     };
 
     window.speechSynthesis.speak(utterance);
@@ -119,12 +133,13 @@ const InterviewRoom = () => {
 
   // Send Answer to Backend
   const handleSendAnswer = () => {
-    const finalAnswer = isCodingQuestion ? code : transcript;
+    const finalAnswer = isCodingQuestion ? code : (micPermission ? transcript : manualAnswer);
     if (!finalAnswer.trim()) return;
     SpeechRecognition.stopListening();
     socket.emit('user-spoke', { sessionId, answer: finalAnswer });
     resetTranscript();
     setCode('');
+    setManualAnswer('');
   };
 
   // End Interview Manually
@@ -194,20 +209,38 @@ const InterviewRoom = () => {
             {isCodingQuestion ? (
               <CodeEditor code={code} setCode={setCode} />
             ) : (
-              <div className="w-full h-full p-4 bg-gray-900 border border-gray-700 rounded-md text-white">
-                <h3 className="font-bold mb-2 text-gray-400">Your Answer:</h3>
-                <p className="text-gray-200">
-                  {transcript || (listening ? 'Listening...' : 'Waiting for your turn...')}
-                </p>
-              </div>
+              micPermission ? (
+                <div className="w-full h-full p-4 bg-gray-900 border border-gray-700 rounded-md text-white">
+                  <h3 className="font-bold mb-2 text-gray-400">Your Answer:</h3>
+                  <p className="text-gray-200">
+                    {transcript || (listening ? 'Listening...' : 'Click the "Speak" button to answer.')}
+                  </p>
+                </div>
+              ) : (
+                <textarea
+                  className="w-full h-full p-4 bg-gray-900 border border-gray-700 rounded-md text-white"
+                  placeholder="Microphone not detected. Type your answer here."
+                  value={manualAnswer}
+                  onChange={(e) => setManualAnswer(e.target.value)}
+                />
+              )
             )}
           </div>
 
           {/* Controls */}
           <div className="flex space-x-4">
+            {!isCodingQuestion && micPermission && (
+              <button
+                onClick={() => SpeechRecognition.startListening({ continuous: false })}
+                disabled={listening || isAiSpeaking}
+                className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-6 rounded-full transition-all disabled:bg-gray-600"
+              >
+                {listening ? 'Listening...' : 'Speak'}
+              </button>
+            )}
             <button
               onClick={handleSendAnswer}
-              disabled={isAiSpeaking || (isCodingQuestion ? !code.trim() : !transcript.trim())}
+              disabled={isAiSpeaking || (isCodingQuestion ? !code.trim() : !(micPermission ? transcript.trim() : manualAnswer.trim()))}
               className="bg-cyan-600 hover:bg-cyan-700 text-white font-bold py-2 px-6 rounded-full transition-all disabled:bg-gray-600"
             >
               Submit Answer
